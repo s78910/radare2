@@ -357,7 +357,7 @@ R_API bool r_anal_xrefs_has_xrefs_at(RAnal *anal, ut64 at) {
 
 static void r_anal_xrefs_list_table(RAnal *anal, RVecAnalRef *anal_refs, const char *arg, RTable *table) {
 	if (!table) {
-		table = r_table_new ("xrefs");
+		table = r_table_new ("xrefs", NULL);
 	}
 	r_table_set_columnsf (table, "dddssss", "from", "to", "size", "type", "perm", "fromname", "toname");
 
@@ -368,7 +368,7 @@ static void r_anal_xrefs_list_table(RAnal *anal, RVecAnalRef *anal_refs, const c
 		char *toname = anal->coreb.getNameDelta (anal->coreb.core, ref->at);
 		r_table_add_rowf (table, "xxnssss",
 				ref->at, ref->addr,
-				r_anal_ref_size (ref),
+				(ut64)r_anal_ref_size (ref),
 				r_anal_ref_type_tostring (t),
 				r_anal_ref_perm_tostring (ref),
 				toname, fromname

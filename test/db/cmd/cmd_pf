@@ -62,6 +62,18 @@ EXPECT=<<EOF
 EOF
 RUN
 
+NAME=pf array spanning past the block (#26034)
+FILE=malloc://64
+CMDS=<<EOF
+b 16
+w ABCDEFGHIJKLMNOPQRSTUVWXYZ
+pf [20]b
+EOF
+EXPECT=<<EOF
+0x00000000 = [ 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52, 0x53, 0x54 ]
+EOF
+RUN
+
 # Cf tests look malformed
 NAME=Cf main
 BROKEN=1
@@ -1056,4 +1068,29 @@ EXPECT=<<EOF
   }
 ]
 EOF
+RUN
+
+NAME=pfp printf format string to pf (64bit)
+FILE=-
+ARGS=-e asm.bits=64
+CMDS=pfp %s%d%f%x
+EXPECT=<<EOF2
+SiFx
+EOF2
+RUN
+
+NAME=pfp printf format string to pf (32bit)
+FILE=-
+ARGS=-e asm.bits=32
+CMDS=pfp %ld%s
+EXPECT=<<EOF2
+is
+EOF2
+RUN
+
+NAME=pfp rejects unsupported format
+FILE=-
+CMDS=pfp %1$s
+EXPECT=<<EOF2
+EOF2
 RUN

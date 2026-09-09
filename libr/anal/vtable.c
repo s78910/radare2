@@ -10,7 +10,7 @@
 #define VTABLE_READ_ADDR_FUNC(fname, read_fname, sz) \
 	static bool fname(RAnal *anal, ut64 addr, ut64 *buf) {\
 		ut8 tmp[sz];\
-		if (!anal->iob.read_at (anal->iob.io, addr, tmp, sz)) {\
+		if (anal->iob.read_at (anal->iob.io, addr, tmp, sz) != sz) {\
 			return false;\
 		}\
 		*buf = read_fname (tmp);\
@@ -155,9 +155,12 @@ static bool vtable_is_addr_vtable_start_msvc(RVTableContext *context, ut64 curAd
 	R_VEC_FOREACH (xrefs, xref) {
 		// section in which current xref lies
 		if (vtable_addr_in_text_section (context, xref->addr)) {
-			context->anal->iob.read_at (context->anal->iob.io, xref->addr, buf, sizeof (buf));
+			const int nread = context->anal->iob.read_at (context->anal->iob.io, xref->addr, buf, sizeof (buf));
+			if (nread < 1) {
+				continue;
+			}
 			RAnalOp analop = {0};
-			r_anal_op (context->anal, &analop, xref->addr, buf, sizeof (buf), R_ARCH_OP_MASK_BASIC);
+			r_anal_op (context->anal, &analop, xref->addr, buf, nread, R_ARCH_OP_MASK_BASIC);
 			if (analop.type == R_ANAL_OP_TYPE_MOV || analop.type == R_ANAL_OP_TYPE_LEA) {
 				RVecAnalRef_free (xrefs);
 				r_anal_op_fini (&analop);
@@ -228,7 +231,11 @@ R_API RList *r_anal_vtable_search(RVTableContext *context) {
 		return NULL;
 	}
 
-	RList *sections = anal->binb.get_sections (anal->binb.bin);
+	if (!anal->binb.get_sections_vec) {
+		r_list_free (vtables);
+		return NULL;
+	}
+	RVecRBinSection *sections = anal->binb.get_sections_vec (anal->binb.bin);
 	if (!sections) {
 		r_list_free (vtables);
 		return NULL;
@@ -236,9 +243,8 @@ R_API RList *r_anal_vtable_search(RVTableContext *context) {
 
 	r_cons_break_push (cons, NULL, NULL);
 
-	RListIter *iter;
 	RBinSection *section;
-	r_list_foreach (sections, iter, section) {
+	R_VEC_FOREACH (sections, section) {
 		if (r_cons_is_breaked (cons)) {
 			break;
 		}

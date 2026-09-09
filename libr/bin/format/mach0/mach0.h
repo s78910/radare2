@@ -156,11 +156,6 @@ struct MACH0_(opts_t) {
 	RBinFile *bf;
 };
 
-static inline void r_bin_section_fini (RBinSection *bs) {
-	free (bs->name);
-	free (bs->format);
-}
-
 R_VEC_TYPE_WITH_FINI(RVecSegment, RBinSection, r_bin_section_fini);
 
 static inline void mach0_lib_fini (char **lib) {
@@ -206,6 +201,10 @@ struct MACH0_(obj_t) {
 	ut8 *signature_der; // CSSLOT_DER_ENTITLEMENTS payload (slot 7, magic 0xfade7172)
 	ut32 signature_der_size; // size of signature_der payload
 	bool cs_present; // LC_CODE_SIGNATURE parsed successfully
+	ut64 cs_paddr;
+	ut64 cs_size;
+	ut64 cert_paddr;
+	ut64 cert_size;
 	bool cs_has_cms; // CMS blob (developer signature) present and non-empty
 	ut32 cs_flags; // CodeDirectory flags word
 	ut8 cs_platform; // CodeDirectory platform byte (nonzero => platform binary)
@@ -219,6 +218,8 @@ struct MACH0_(obj_t) {
 	} thread_state;
 	bool libs_loaded;
 	RVecMach0Lib libs_cache;
+	RVecRBinTrycatch trycatch;
+	bool trycatch_loaded;
 	int nlibs;
 	ut64 size;
 	ut64 baddr;
@@ -256,7 +257,7 @@ struct MACH0_(obj_t) {
 	RVecRBinImport imports_cache;
 	bool relocs_loaded;
 	RSkipList *relocs_cache;
-	RList *reloc_fixups;
+	RVecRBinReloc reloc_fixups;
 	ut8 *internal_buffer;
 	int internal_buffer_size;
 	int limit; // user defined
@@ -288,7 +289,6 @@ struct MACH0_(obj_t) *MACH0_(mach0_new)(const char *file, struct MACH0_(opts_t) 
 struct MACH0_(obj_t) *MACH0_(new_buf)(RBinFile *bf, RBuffer *buf, struct MACH0_(opts_t) *options);
 void *MACH0_(mach0_free)(struct MACH0_(obj_t) *bin);
 const RVecSection *MACH0_(load_sections)(struct MACH0_(obj_t) *mo);
-RList *MACH0_(get_segments)(RBinFile *bf, struct MACH0_(obj_t) *mo);
 RVecSegment *MACH0_(get_segments_vec)(RBinFile *bf, struct MACH0_(obj_t) *mo);
 const bool MACH0_(load_symbols)(struct MACH0_(obj_t) *mo);
 void MACH0_(pull_symbols)(struct MACH0_(obj_t) *mo, RBinSymbolCallback cb, void *user);

@@ -45,6 +45,10 @@ static inline char r_strs_at(RStrs s, size_t i) {
 	return (i < r_strs_len (s))? s.a[i]: 0;
 }
 
+static inline char r_strs_lastch(RStrs s) {
+	return r_strs_empty (s)? 0: s.b[-1];
+}
+
 /* Subslicing */
 static inline RStrs r_strs_sub(RStrs s, size_t from, size_t to) {
 	const size_t l = r_strs_len (s);
@@ -156,8 +160,9 @@ R_API char *r_strs_tostring(RStrs s);
 R_API st64 r_strs_tosnum(RStrs s, bool *ok);
 
 /* Parse a slice as an unsigned integer, respecting slice bounds (no strlen,
- * no malloc). Only recognises plain integer literals — for richer syntax
- * (signed, 0b, 0o, 0t, expressions, …) call r_num_get.
+ * no malloc). Recognises plain integer literals with optional C integer
+ * suffixes; for richer syntax (signed, 0b, 0o, 0t, expressions, …) call
+ * r_num_get.
  *
  *   base = 0   auto-detect: "0x" / "0X" prefix → hex, else decimal
  *   base = 10  decimal only (digits)

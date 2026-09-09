@@ -104,38 +104,25 @@ static bool symbols_vec(RBinFile *bf) {
 		addsym (ret, "RuntimeAddress", r_read_le16 (&hdr->RuntimeAddress));
 		addsym (ret, "DeviceAddress", r_read_le16 (&hdr->DeviceAddress));
 		addsym (ret, "PointAddress", r_read_le16 (&hdr->PointAddress));
-
-		eprintf ("InitAddress: 0x%04x\n", (ut16) hdr->InitAddress);
-		eprintf ("RuntimeAddress: 0x%04x\n", (ut16) hdr->RuntimeAddress);
-		eprintf ("DeviceAddress: 0x%04x\n", (ut16) hdr->DeviceAddress);
-		eprintf ("PointAddress: 0x%04x\n", (ut16) hdr->PointAddress);
 	} else if (gbuf[0] == 0xFE) {
 		MSX_Header_BIN *hdr = (MSX_Header_BIN*)gbuf;
 		addsym (ret, "BINSignature", r_read_be8 (&hdr->BINSignature));
-		addsym (ret, "StartAddress", r_read_be16 (&hdr->StartAddress));
-		addsym (ret, "EndAddress", r_read_be16 (&hdr->EndAddress));
-		addsym (ret, "InitAddress", r_read_be16 (&hdr->InitAddress));
-
-		eprintf ("StartAddress: 0x%04x\n", (ut16) hdr->StartAddress);
-		eprintf ("EndAddress: 0x%04x\n", (ut16) hdr->EndAddress);
-		eprintf ("InitAddress: 0x%04x\n", (ut16) hdr->InitAddress);
+		addsym (ret, "StartAddress", r_read_le16 (&hdr->StartAddress));
+		addsym (ret, "EndAddress", r_read_le16 (&hdr->EndAddress));
+		addsym (ret, "InitAddress", r_read_le16 (&hdr->InitAddress));
 	}
 	return true;
 }
 
-static RList *sections(RBinFile *bf) {
-	RList *ret = NULL;
-	if (!(ret = r_list_new ())) {
-		return NULL;
-	}
-
+static bool sections_vec(RBinFile *bf) {
 	ut8 gbuf[32];
 	int left = r_buf_read_at (bf->buf, 0, (ut8*)&gbuf, sizeof (gbuf));
 	if (left < sizeof (gbuf)) {
-		return NULL;
+		return false;
 	}
+	RVecRBinSection_clear (&bf->bo->sections_vec);
 
-	RBinSection *ptr = R_NEW0 (RBinSection);
+	RBinSection *ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 	ptr->name = strdup ("header");
 	ptr->paddr = ptr->vaddr = 0;
 	ut64 baddr = 0;
@@ -153,17 +140,15 @@ static RList *sections(RBinFile *bf) {
 	ptr->size = hdrsize;
 	ptr->perm = R_PERM_R;
 	ptr->add = true;
-	r_list_append (ret, ptr);
 
-	ptr = R_NEW0 (RBinSection);
+	ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 	ptr->name = strdup ("text");
 	ptr->paddr = 0;
 	ptr->vaddr = baddr;
 	ptr->size = ptr->vsize = r_buf_size (bf->buf) - hdrsize;
 	ptr->perm = R_PERM_RX;
 	ptr->add = true;
-	r_list_append (ret, ptr);
-	return ret;
+	return true;
 }
 
 static RList *entries(RBinFile *bf) {
@@ -203,7 +188,7 @@ RBinPlugin r_bin_plugin_msx = {
 	.check = &check,
 	.baddr = &baddr,
 	.entries = &entries,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.symbols_vec = &symbols_vec,
 	.info = &info,
 	.minstrlen = 3

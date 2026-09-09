@@ -3,14 +3,19 @@
 TARGET="$1"
 
 usage() {
-	echo "Usage: sys/cross.sh [aarch64-linux-gnu|arm64-linux|clean]"
+	echo "Usage: sys/cross.sh [aarch64-linux-gnu|arm64-linux|mipsbe|mips-linux-gnu|clean]"
 	echo "Environment:"
 	echo "	CROSS=aarch64-linux-gnu-    # toolchain prefix"
 	echo "	CC=aarch64-linux-gnu-gcc    # target compiler"
 	echo "	HOST_CC=cc                  # build-machine compiler for host tools"
 	echo "	PLUGINS_CFG=path            # defaults to plugins.static.nogpl.cfg"
+	echo "	CONFIGURE_PLUGINS_ARGS=args # extra configure-plugins arguments"
+	echo "	CFGARGS=args                # extra configure arguments"
 	echo "	JOBS=-j8                    # make parallelism"
 	echo "	CLEAN=0                     # do not clean before configuring"
+	echo "	BUILD_R2R=1                 # also build a target r2r binary"
+	echo "	BUILD_BINR=1                # also build the regular binr binaries"
+	echo "	R2R_LIBATOMIC=args          # target r2r libatomic flags"
 	echo "	NOSTRIP=1                   # do not strip binr/blob/r2blob"
 	exit 1
 }
@@ -48,6 +53,9 @@ clean)
 ""|aarch64|arm64|aarch64-linux|arm64-linux|aarch64-linux-gnu)
 	HOST=aarch64-linux-gnu
 	;;
+mips|mipsbe|mips-linux|mips-linux-gnu)
+	HOST=mips-linux-gnu
+	;;
 *-)
 	CROSS="$TARGET"
 	HOST="${TARGET%-}"
@@ -71,7 +79,13 @@ else
 fi
 
 CROSS="${CROSS:-${HOST}-}"
-COMPILER="${COMPILER:-${HOST}-gcc}"
+if [ -z "$COMPILER" ]; then
+	if [ -f "mk/${HOST}-gcc.mk" ]; then
+		COMPILER="${HOST}-gcc"
+	else
+		COMPILER=gcc
+	fi
+fi
 CC="${CC:-$(find_tool "${CROSS}gcc")}"
 AR="${AR:-${CROSS}ar}"
 RANLIB="${RANLIB:-${CROSS}ranlib}"
@@ -103,7 +117,16 @@ fi
 
 export CC AR RANLIB LD OBJCOPY STRIP PKGCONFIG HOST_CC
 export USE_PIE=0
-export CFLAGS="${CFLAGS} -O2"
+if [ -z "${CROSS_CFLAGS}" ]; then
+	export CFLAGS="${CFLAGS} -O2"
+else
+	export CFLAGS="${CROSS_CFLAGS}"
+fi
+if [ "${CROSS_WITH_GPL}" = 1 ]; then
+	GPL_CONFIGURE_ARG=
+else
+	GPL_CONFIGURE_ARG=--without-gpl
+fi
 
 run_make() {
 	${MAKE} ${JOBS} \
@@ -124,21 +147,38 @@ run_make_blob() {
 	run_make -C binr/blob LDFLAGS="$BLOB_LDFLAGS"
 }
 
+run_make_r2r() {
+	if [ -z "$R2R_LIBATOMIC" ]; then
+		R2R_LIBATOMIC="$(sed -n 's/^LIBATOMIC=//p' config-user.mk | tail -n 1)"
+	fi
+	run_make -C binr/r2r LIBATOMIC="$R2R_LIBATOMIC"
+}
+
+run_make_binr() {
+	if [ -z "$R2R_LIBATOMIC" ]; then
+		R2R_LIBATOMIC="$(sed -n 's/^LIBATOMIC=//p' config-user.mk | tail -n 1)"
+	fi
+	run_make -C binr LIBATOMIC="$R2R_LIBATOMIC"
+}
+
 if [ "${CLEAN}" != 0 ]; then
 	${MAKE} clean > /dev/null 2>&1 || true
 fi
 
 rm -f libr/include/r_version.h
 cp -f "$PLUGINS_CFG" plugins.cfg || exit 1
-./configure-plugins || exit 1
+# shellcheck disable=SC2086
+./configure-plugins $CONFIGURE_PLUGINS_ARGS || exit 1
 
+# shellcheck disable=SC2086
 ./configure \
 	--host="$HOST" \
 	--with-ostype=gnulinux \
 	--with-compiler="$COMPILER" \
 	--with-libr \
 	--with-static-themes \
-	--without-gpl || exit 1
+	$GPL_CONFIGURE_ARG \
+	$CFGARGS || exit 1
 
 run_make libr/include/r_version.h || exit 1
 run_make -C shlr sdbs || exit 1
@@ -148,9 +188,18 @@ run_make -C libr/socket || exit 1
 run_make -C shlr || exit 1
 run_make -C libr || exit 1
 run_make_blob || exit 1
+if [ "${BUILD_BINR}" = 1 ]; then
+	run_make_binr || exit 1
+fi
+if [ "${BUILD_R2R}" = 1 ]; then
+	run_make_r2r || exit 1
+fi
 
 if [ "${NOSTRIP}" != 1 ] && command -v "$STRIP" >/dev/null 2>&1; then
 	"$STRIP" -s binr/blob/r2blob 2> /dev/null || true
+	if [ "${BUILD_R2R}" = 1 ]; then
+		"$STRIP" -s binr/r2r/r2r 2> /dev/null || true
+	fi
 fi
 
 echo "Built binr/blob/r2blob for $HOST"

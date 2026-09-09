@@ -67,7 +67,7 @@ static RCoreHelpMessage help_msg_slash_pattern = {
 };
 
 static RCoreHelpMessage help_msg_slash_ad = {
-	"Usage: /ad[/<*jq>]", "[value]", "Backward search subcommands",
+	"Usage: /ad[/][a][j|q|*]", "[value]", "Backward search subcommands",
 	"/ad", " rax", "search in plaintext disasm for matching instructions",
 	"/ad", " rax$", "search in plaintext disasm for instruction matchin given glob expression",
 	"/adj", " rax", "json output searching in disasm with plaintext",
@@ -80,6 +80,7 @@ static RCoreHelpMessage help_msg_slash_ad = {
 static RCoreHelpMessage help_msg_slash_magic = {
 	"/m", "", "search for known magic patterns",
 	"/m", " [file]", "same as above but using the given magic file",
+	"/mt", " [file]", "search for text-based magic patterns",
 	"/me", " [msg]", "like ?e similar to IRC's /me",
 	"/mm", "", "search for known filesystems and mount them automatically",
 	"/mb", "", "search recognized RBin headers",
@@ -108,7 +109,7 @@ static RCoreHelpMessage help_msg_slash = {
 	"/h", "[?*] [algo] [digest] [size]", "find block of size bytes having this digest (see ph)",
 	"/i", " foo", "search for string 'foo' ignoring case",
 	"/k", " foo", "search for string 'foo' using Rabin Karp alg",
-	"/m", "[?][ebm] magicfile", "search for magic, filesystems or binary headers",
+	"/m", "[?][ebmt] magicfile", "search for magic, filesystems or binary headers",
 	"/o", " [n]", "show offset of n instructions backward",
 	"/O", " [n]", "same as /o, but with a different fallback if anal cannot be used",
 	"/p", "[?][p] patternsize", "search for pattern of given size",
@@ -153,7 +154,7 @@ static RCoreHelpMessage help_msg_slash_a = {
 	"/aa", " mov eax", "linearly find aproximated assembly (case insensitive strstr)",
 	"/ab", "[f] [delta]", "search for backward jumps (usually loops)",
 	"/ac", " mov eax", "same as /aa, but case-sensitive",
-	"/ad", "[?][/*jq] push;mov", "match ins1 followed by ins2 in linear disasm",
+	"/ad", "[?][/][a][j|q|*] push;mov", "match ins1 followed by ins2 in linear disasm",
 	"/ae", " esil", "search for esil expressions matching substring",
 	"/af", "[l] family", "search for instruction of specific family (afl=list)",
 	"/aF", "[d] opstr", "find instructions matching given opstr only in analyzed code",
@@ -224,9 +225,9 @@ static RCoreHelpMessage help_msg_slash_r = {
 static RCoreHelpMessage help_msg_slash_Gk = {
 	"Usage: /gk", "", "query stored gadgets",
 	"/gk", " [ret|jop|cop|syscall|pivot|memread|memwrite|www]", "show gadgets",
-	"/gk", " [rww|signal|mov|ldconst|arithm|logic|shift|cmp]", "show primitive classes",
+	"/gk", " [rww|signal|mov|ldconst|arithm|arithm_ct|logic]", "show primitive classes",
+	"/gk", " [shift|cmp|nop]", "show primitive classes",
 	"/gk", " [cond.always|cond.controlled]", "show ESIL-classified conditional gadgets",
-	"/gk", " [nop|mov|const|arithm|arithm_ct]", "show legacy rop classes",
 	"/gkj", "", "json output",
 	"/gkq", "", "list Gadgets offsets",
 	NULL
@@ -244,7 +245,7 @@ static RCoreHelpMessage help_msg_slash_x = {
 
 // clang-format on
 
-struct search_parameters {
+typedef struct {
 	RCore *core;
 	RList *boundaries;
 	const char *mode;
@@ -260,14 +261,14 @@ struct search_parameters {
 	int c; // used for progress
 	int count;
 	bool progressbar;
-};
+} RSearchParameters;
 
 struct endlist_pair {
 	int instr_offset;
 	int delay_size;
 };
 
-static inline void print_search_progress(ut64 at, ut64 to, int n, struct search_parameters *param) {
+static inline void print_search_progress(ut64 at, ut64 to, int n, RSearchParameters *param) {
 	if (!param->progressbar) {
 		return;
 	}
@@ -284,7 +285,7 @@ static inline void print_search_progress(ut64 at, ut64 to, int n, struct search_
 	}
 }
 
-static int search_hash(RCore *core, const char *hashname, const char *hashstr, ut32 minlen, ut32 maxlen, struct search_parameters *param) {
+static int search_hash(RCore *core, const char *hashname, const char *hashstr, ut32 minlen, ut32 maxlen, RSearchParameters *param) {
 	RIOMap *map;
 	ut8 *buf;
 	int i, j;
@@ -429,7 +430,7 @@ static int __backward_prelude_cb_hit(RSearchKeyword *kw, void *user, ut64 addr) 
 
 static void cmd_search_ag(RCore *core, const char *input) {
 	if (input[1] == '?') {
-		r_core_cmd_help_match (core, help_msg_slash_a, "/ag");
+		r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/ag", 0, true);
 	} else {
 		ut64 addr = UT64_MAX;
 		if (input[1]) {
@@ -709,7 +710,7 @@ static char *getstring(char *b, int l) {
 
 static int _cb_hit_sz(RSearchKeyword *kw, int klen, void *user, ut64 addr) {
 	R_RETURN_VAL_IF_FAIL (kw && user, -1);
-	struct search_parameters *param = user;
+	RSearchParameters *param = user;
 	RCore *core = param->core;
 	ut64 base_addr = 0;
 	bool use_color = core->print->flags & R_PRINT_FLAGS_COLOR;
@@ -829,7 +830,7 @@ static int _cb_hit(RSearchKeyword * R_NULLABLE kw, void *user, ut64 addr) {
 	RSearchKeyword *kw_used = &kw_fake;
 	int klen = 0;
 	if (kw) {
-		struct search_parameters *param = user;
+		RSearchParameters *param = user;
 		const RSearch *search = param->core->search;
 		klen = kw? kw->keyword_length + (search->mode == R_SEARCH_DELTAKEY): 0;
 		kw_used = kw;
@@ -905,27 +906,27 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, R_UNUSED int perm, const ch
 		perm = R_PERM_RWX;
 	}
 	if (!strcmp (mode, "flag")) {
-		const RList *ls = r_flag_get_list (core->flags, core->addr);
+		const RVecFlagItemPtr *ls = r_flag_get_vec (core->flags, core->addr);
 		RFlagItem *fi;
-		RListIter *iter;
-		r_list_foreach (ls, iter, fi) {
+		RFlagItem **iter;
+		r_flag_item_vec_foreach (ls, iter, fi) {
 			if (fi->size > 1) {
 				append_bound (list, core->io, search_itv, fi->addr, fi->size, 7);
 			}
 		}
 	} else if (r_str_startswith (mode, "flag:")) {
 		const char *match = mode + 5;
-		const RList *ls = r_flag_get_list (core->flags, core->addr);
+		const RVecFlagItemPtr *ls = r_flag_get_vec (core->flags, core->addr);
 		RFlagItem *fi;
-		RListIter *iter;
-		r_list_foreach (ls, iter, fi) {
+		RFlagItem **iter;
+		r_flag_item_vec_foreach (ls, iter, fi) {
 			if (fi->size > 1 && r_str_glob (fi->name, match)) {
 				append_bound (list, core->io, search_itv, fi->addr, fi->size, 7);
 			}
 		}
 	} else if (!r_config_get_b (core->config, "cfg.debug") && !core->io->va) {
 		append_bound (list, core->io, search_itv, 0, r_io_size (core->io), 7);
-	} else if (!strcmp (mode, "file")) {
+	} else if (!strcmp (mode, "file") || !strcmp (mode, "raw")) {
 		append_bound (list, core->io, search_itv, 0, r_io_size (core->io), 7);
 	} else if (!strcmp (mode, "block")) {
 		append_bound (list, core->io, search_itv, core->addr, core->blocksize, 7);
@@ -935,8 +936,6 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, R_UNUSED int perm, const ch
 			append_bound (list, core->io, search_itv, m->itv.addr, m->itv.size, m->perm);
 		}
 	} else if (!strcmp (mode, "io.maps")) {
-		ut64 begin = UT64_MAX;
-		ut64 end = UT64_MAX;
 		RIOBank *bank = r_io_bank_get (core->io, core->io->bank);
 		RListIter *iter;
 		RIOMapRef *mapref;
@@ -949,25 +948,8 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, R_UNUSED int perm, const ch
 				const ut64 from = r_io_map_begin (map);
 				const ut64 to = r_io_map_end (map);
 				const int rwx = map->perm;
-				if (begin == UT64_MAX) {
-					begin = from;
-				}
-				if (end == UT64_MAX) {
-					end = to;
-				} else {
-					if (end == from) {
-						end = to;
-					} else {
-						append_bound (list, NULL, search_itv,
-							begin, end - begin, rwx);
-						begin = from;
-						end = to;
-					}
-				}
+				append_bound (list, core->io, search_itv, from, to - from, rwx);
 			}
-		}
-		if (end != UT64_MAX) {
-			append_bound (list, NULL, search_itv, begin, end - begin, 7);
 		}
 	} else if (r_str_startswith (mode, "io.maps.")) {
 		const char *sperm = mode + strlen ("io.maps.");
@@ -1006,8 +988,7 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, R_UNUSED int perm, const ch
 		RBinObject *obj = r_bin_cur_object (core->bin);
 		if (obj) {
 			RBinSection *s;
-			RListIter *iter;
-			r_list_foreach (obj->sections, iter, s) {
+			R_VEC_FOREACH (&obj->sections_vec, s) {
 				if (!s->is_segment) {
 					continue;
 				}
@@ -1026,7 +1007,7 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, R_UNUSED int perm, const ch
 			ut64 to = 0;
 			RBinSection *s;
 			RListIter *iter;
-			r_list_foreach (obj->sections, iter, s) {
+			R_VEC_FOREACH (&obj->sections_vec, s) {
 				if (s->is_segment) {
 					continue;
 				}
@@ -1081,8 +1062,7 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, R_UNUSED int perm, const ch
 		RBinObject *obj = r_bin_cur_object (core->bin);
 		if (obj) {
 			RBinSection *s;
-			RListIter *iter;
-			r_list_foreach (obj->sections, iter, s) {
+			R_VEC_FOREACH (&obj->sections_vec, s) {
 				if (s->is_segment) {
 					continue;
 				}
@@ -1099,8 +1079,7 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, R_UNUSED int perm, const ch
 		RBinObject *obj = r_bin_cur_object (core->bin);
 		if (obj) {
 			RBinSection *s;
-			RListIter *iter;
-			r_list_foreach (obj->sections, iter, s) {
+			R_VEC_FOREACH (&obj->sections_vec, s) {
 				if (!s->is_segment) {
 					continue;
 				}
@@ -1115,8 +1094,7 @@ R_API RList *r_core_get_boundaries_prot(RCore *core, R_UNUSED int perm, const ch
 		RBinObject *obj = r_bin_cur_object (core->bin);
 		if (obj) {
 			RBinSection *s;
-			RListIter *iter;
-			r_list_foreach (obj->sections, iter, s) {
+			R_VEC_FOREACH (&obj->sections_vec, s) {
 				if (s->is_segment) {
 					continue;
 				}
@@ -1487,32 +1465,21 @@ ret:
 }
 
 static void print_rop(RCore *core, RList *hitlist, PJ *pj, int mode, const RCoreGadgetEsilInfo *esil_info) {
-	const char *otype;
 	RCoreAsmHit *hit = NULL;
 	RListIter *iter;
-	RList *ropList = NULL;
 	char *buf_asm = NULL;
 	unsigned int size = 0;
 	RAnalOp analop = {0};
-	Sdb *db = NULL;
 	Sdb *gadget_db = NULL;
 	const bool colorize = r_config_get_i (core->config, "scr.color");
 	const bool rop_comments = r_config_get_i (core->config, "gadget.comments");
 	const bool esil = r_config_get_i (core->config, "asm.esil");
-	const bool rop_db = r_config_get_i (core->config, "gadget.db");
+	const bool gadget_db_enabled = r_config_get_i (core->config, "gadget.db");
 
-	if (rop_db) {
-		ropList = r_list_newf (free);
-		db = sdb_ns (core->sdb, "rop", true);
-		if (!db) {
-			R_LOG_ERROR ("Could not create SDB 'rop' namespace");
-			r_list_free (ropList);
-			return;
-		}
+	if (gadget_db_enabled) {
 		gadget_db = sdb_ns (core->sdb, "gadget", true);
 		if (!gadget_db) {
 			R_LOG_ERROR ("Could not create SDB 'gadget' namespace");
-			r_list_free (ropList);
 			return;
 		}
 	}
@@ -1534,17 +1501,14 @@ static void print_rop(RCore *core, RList *hitlist, PJ *pj, int mode, const RCore
 			RAnalOp asmop;
 			ut8 *buf = malloc (hit->len);
 			if (!buf) {
-				return;
+				hit = NULL;
+				break;
 			}
 			r_io_read_at (core->io, hit->addr, buf, hit->len);
 			r_asm_set_pc (core->rasm, hit->addr);
 			r_asm_disassemble (core->rasm, &asmop, buf, hit->len);
-			r_anal_op (core->anal, &analop, hit->addr, buf, hit->len, R_ARCH_OP_MASK_ESIL);
+			r_anal_op (core->anal, &analop, hit->addr, buf, hit->len, R_ARCH_OP_MASK_BASIC);
 			size += hit->len;
-			if (analop.type != R_ANAL_OP_TYPE_RET) {
-				char *opstr_n = r_str_newf (" %s", R_STRBUF_SAFEGET (&analop.esil));
-				r_list_append (ropList, (void *) opstr_n);
-			}
 			pj_o (pj);
 			pj_kn (pj, "addr", hit->addr);
 			pj_ki (pj, "size", hit->len);
@@ -1556,13 +1520,9 @@ static void print_rop(RCore *core, RList *hitlist, PJ *pj, int mode, const RCore
 			r_anal_op_fini (&analop);
 		}
 		pj_end (pj);
-		if (db && hit) {
+		if (gadget_db && hit) {
 			const ut64 addr = ((RCoreAsmHit *) hitlist->head->data)->addr;
-			// r_cons_printf (core->cons, "Gadget size: %d\n", (int)size);
 			r_strf_var (key, 32, "0x%08"PFMT64x, addr);
-			if (!esil_info || (esil_info->classes & R_CORE_GADGET_CLASS_RET)) {
-				rop_classify (core, db, ropList, key, size);
-			}
 			gadget_store_classes (gadget_db, esil_info, key, size);
 		}
 		if (hit) {
@@ -1580,16 +1540,17 @@ static void print_rop(RCore *core, RList *hitlist, PJ *pj, int mode, const RCore
 		r_list_foreach (hitlist, iter, hit) {
 			RAnalOp asmop;
 			ut8 *buf = malloc (hit->len);
+			if (!buf) {
+				hit = NULL;
+				break;
+			}
 			r_io_read_at (core->io, hit->addr, buf, hit->len);
 			r_asm_set_pc (core->rasm, hit->addr);
 			r_asm_disassemble (core->rasm, &asmop, buf, hit->len);
-			r_anal_op (core->anal, &analop, hit->addr, buf, hit->len, R_ARCH_OP_MASK_BASIC);
 			size += hit->len;
-			const char *opstr = R_STRBUF_SAFEGET (&analop.esil);
-			if (analop.type != R_ANAL_OP_TYPE_RET) {
-				r_list_append (ropList, r_str_newf (" %s", opstr));
-			}
 			if (esil) {
+				r_anal_op (core->anal, &analop, hit->addr, buf, hit->len, R_ARCH_OP_MASK_ESIL);
+				const char *opstr = R_STRBUF_SAFEGET (&analop.esil);
 				r_cons_printf (core->cons, "%s\n", opstr);
 			} else if (colorize) {
 				buf_asm = r_print_colorize_opcode (core->print, asmop.mnemonic,
@@ -1601,15 +1562,13 @@ static void print_rop(RCore *core, RList *hitlist, PJ *pj, int mode, const RCore
 			}
 			free (buf);
 			r_anal_op_fini (&asmop);
-			r_anal_op_fini (&analop);
-		}
-		if (db && hit) {
-			const ut64 addr = ((RCoreAsmHit *) hitlist->head->data)->addr;
-			// r_cons_printf (core->cons, "Gadget size: %d\n", (int)size);
-			r_strf_var (key, 32, "0x%08"PFMT64x, addr);
-			if (!esil_info || (esil_info->classes & R_CORE_GADGET_CLASS_RET)) {
-				rop_classify (core, db, ropList, key, size);
+			if (esil) {
+				r_anal_op_fini (&analop);
 			}
+		}
+		if (gadget_db && hit) {
+			const ut64 addr = ((RCoreAsmHit *) hitlist->head->data)->addr;
+			r_strf_var (key, 32, "0x%08"PFMT64x, addr);
 			gadget_store_classes (gadget_db, esil_info, key, size);
 		}
 		break;
@@ -1624,23 +1583,22 @@ static void print_rop(RCore *core, RList *hitlist, PJ *pj, int mode, const RCore
 			}
 			ut8 *buf = malloc (1 + hit->len);
 			if (!buf) {
+				hit = NULL;
 				break;
 			}
 			buf[hit->len] = 0;
 			r_io_read_at (core->io, hit->addr, buf, hit->len);
 			r_asm_set_pc (core->rasm, hit->addr);
 			r_asm_disassemble (core->rasm, &asmop, buf, hit->len);
-			r_anal_op (core->anal, &analop, hit->addr, buf, hit->len, R_ARCH_OP_MASK_ESIL);
-			size += hit->len;
-			if (analop.type != R_ANAL_OP_TYPE_RET) {
-				char *opstr_n = r_str_newf (" %s", R_STRBUF_SAFEGET (&analop.esil));
-				r_list_append (ropList, (void *) opstr_n);
+			if (colorize) {
+				r_anal_op (core->anal, &analop, hit->addr, buf, hit->len, R_ARCH_OP_MASK_BASIC);
 			}
+			size += hit->len;
 			char *asm_op_hex = r_hex_bin2strdup(asmop.bytes, asmop.size);
 			if (colorize) {
 				char *buf_asm = r_print_colorize_opcode (core->print, asmop.mnemonic,
 					core->cons->context->pal.reg, core->cons->context->pal.num, false, 0);
-				otype = r_print_color_op_type (core->print, analop.type);
+				const char *otype = r_print_color_op_type (core->print, analop.type);
 				if (comment) {
 					r_cons_printf (core->cons, "  0x%08" PFMT64x " %18s%s  %s%s ; %s\n",
 						hit->addr, asm_op_hex, otype, buf_asm, Color_RESET, comment);
@@ -1660,26 +1618,23 @@ static void print_rop(RCore *core, RList *hitlist, PJ *pj, int mode, const RCore
 			}
 			free (asm_op_hex);
 			free (buf);
-			r_anal_op_fini (&analop);
+			if (colorize) {
+				r_anal_op_fini (&analop);
+			}
 			r_anal_op_fini (&asmop);
 		}
-		if (db && hit) {
+		if (gadget_db && hit) {
 			const ut64 addr = ((RCoreAsmHit *) hitlist->head->data)->addr;
-			// r_cons_printf (core->cons, "Gadget size: %d\n", (int)size);
 			r_strf_var (key, 32, "0x%08"PFMT64x, addr);
-			if (!esil_info || (esil_info->classes & R_CORE_GADGET_CLASS_RET)) {
-				rop_classify (core, db, ropList, key, size);
-			}
 			gadget_store_classes (gadget_db, esil_info, key, size);
 		}
 	}
 	if (mode != 'j') {
 		r_cons_newline (core->cons);
 	}
-	r_list_free (ropList);
 }
 
-static int r_core_search_rop(RCore *core, RInterval search_itv, int gadget_type, int opt, const char *grep, int regexp, struct search_parameters *param) {
+static int r_core_search_rop(RCore *core, RInterval search_itv, int gadget_type, int opt, const char *grep, int regexp, RSearchParameters *param) {
 	const ut8 crop = r_config_get_i (core->config, "gadget.cond"); // decide if cjmp, cret, and ccall should be used too for the gadget-search
 	const bool gadget_esil = r_config_get_b (core->config, "gadget.esil");
 	const ut8 subchain = r_config_get_i (core->config, "gadget.subchains");
@@ -1967,8 +1922,14 @@ bad:
 	return result;
 }
 
+static bool search_esil_mem_write_ro (REsil *esil, ut64 addr, const ut8 *buf, int len) {
+	// readonly mode: silently ignore writes and report success, never trap.
+	// returning false here would set R_ANAL_TRAP_WRITE_ERR and change which addresses match.
+	return true;
+}
+
 static bool esil_addrinfo(REsil *esil) {
-	RCore *core = (RCore *) esil->cb.user;
+	RCore *core = esil->user;
 	ut64 num = 0;
 	const RStrs src = r_esil_pop (esil);
 	if (!r_strs_empty (src) && r_esil_get_parm (esil, src, &num)) {
@@ -1986,7 +1947,7 @@ static bool esil_address(REsil *esil) {
 	return r_esil_pushnum (esil, esil->addr);
 }
 
-static void do_esil_search(RCore *core, struct search_parameters *param, const char *input) {
+static void do_esil_search(RCore *core, RSearchParameters *param, const char *input) {
 	const int hit_combo_limit = r_config_get_i (core->config, "search.esilcombo");
 	RSearch *search = core->search;
 	RSearchKeyword kw = {0};
@@ -1999,41 +1960,44 @@ static void do_esil_search(RCore *core, struct search_parameters *param, const c
 		input++;
 	}
 	if (input[1] != ' ') { // "/E?"
-		r_core_cmd_help (core, help_msg_slash_esil);
+		r_cons_cmd_help (core->cons, help_msg_slash_esil);
 		return;
 	}
-	const unsigned int addrsize = r_config_get_i (core->config, "esil.addr.size");
+	const ut32 addrsize = r_config_get_i (core->config, "esil.addr.size");
 	const int iotrap = r_config_get_i (core->config, "esil.iotrap");
-	int stacksize = r_config_get_i (core->config, "esil.stack.size");
-	const int nonull = r_config_get_i (core->config, "esil.nonull");
-	const int romem = r_config_get_i (core->config, "esil.romem");
-	const int stats = r_config_get_i (core->config, "esil.stats");
-	if (stacksize < 16) {
-		stacksize = 16;
-	}
-	REsil *esil = r_esil_new (stacksize, iotrap, addrsize);
-	if (!esil) {
-		R_LOG_ERROR ("Cannot create an esil instance");
+	const bool nonull = r_config_get_b (core->config, "esil.nonull");
+	const int stacksize = R_MAX (r_config_get_i (core->config, "esil.stack.size"), 16);
+	REsil esil = {0};
+	REsilOptions opt = r_esil_options (NULL, NULL);
+	opt.stacksize = stacksize;
+	opt.iotrap = iotrap;
+	opt.addrsize = addrsize;
+	if (!r_esil_init (&esil, &opt)) {
+		R_LOG_ERROR ("Cannot initialize search esil instance");
 		return;
 	}
-	r_esil_set_op (esil, "$$", esil_address, 0, 1, R_ESIL_OP_TYPE_UNKNOWN, "current address");
-	esil->cb.user = core;
-	// TODO:? cmd_aei (core);
+	if (!r_reg_arena_push (core->anal->reg)) {
+		r_esil_fini (&esil);
+		R_LOG_ERROR ("Cannot push reg arena instance");
+		return;
+	}
+	r_esil_setup (&esil, core->anal, false,
+		r_config_get_b (core->config, "esil.stats"),
+		nonull);
+	esil.cb.hook_mem_write = search_esil_mem_write_ro;
+	esil.user = core;
+	r_esil_set_op (&esil, "$$", esil_address, 0, 1, R_ESIL_OP_TYPE_UNKNOWN, "current address");
+	/* hook addrinfo */
+	r_esil_set_op (&esil, "AddrInfo", esil_addrinfo, 1, 1, R_ESIL_OP_TYPE_UNKNOWN, NULL);
 	RIOMap *map;
 	RListIter *iter;
-	r_esil_setup (esil, core->anal, romem, stats, nonull);
 	r_list_foreach (param->boundaries, iter, map) {
 		bool hit_happens = false;
 		size_t hit_combo = 0;
 		ut64 nres, addr;
 		ut64 from = r_io_map_begin (map);
 		ut64 to = r_io_map_end (map);
-		/* hook addrinfo */
-		r_esil_set_op (esil, "AddrInfo", esil_addrinfo, 1, 1, R_ESIL_OP_TYPE_UNKNOWN, NULL);
-		/* hook addrinfo */
-		r_esil_setup (esil, core->anal, 1, 0, nonull);
-		r_esil_stack_free (esil);
-		esil->verbose = 0;
+		r_esil_stack_free (&esil);
 
 		r_cons_break_push (core->cons, NULL, NULL);
 		for (addr = from; addr < to; addr++) {
@@ -2057,15 +2021,15 @@ static void do_esil_search(RCore *core, struct search_parameters *param, const c
 				R_LOG_INFO ("Breaked at 0x%08"PFMT64x, addr);
 				break;
 			}
-			r_esil_set_pc (esil, addr);
-			if (!r_esil_parse (esil, input + 2)) {
+			r_esil_set_pc (&esil, addr);
+			if (!r_esil_parse (&esil, input + 2)) {
 				// XXX: return value doesnt seems to be correct here
 				R_LOG_ERROR ("Cannot parse esil (%s)", input + 2);
 				break;
 			}
 			hit_happens = false;
-			const RStrs res = r_esil_pop (esil);
-			if (r_esil_get_parm (esil, res, &nres)) {
+			const RStrs res = r_esil_pop (&esil);
+			if (r_esil_get_parm (&esil, res, &nres)) {
 				R_LOG_DEBUG ("RES 0x%08"PFMT64x" %"PFMT64d, addr, nres);
 				if (nres) {
 					eprintf ("hits: %d\r", kw.count);
@@ -2083,10 +2047,10 @@ static void do_esil_search(RCore *core, struct search_parameters *param, const c
 				}
 			} else {
 				R_LOG_ERROR ("Cannot parse esil (%s)", input + 2);
-				r_esil_stack_free (esil);
+				r_esil_stack_free (&esil);
 				break;
 			}
-			r_esil_stack_free (esil);
+			r_esil_stack_free (&esil);
 
 			if (hit_happens) {
 				if (param->outmode == R_MODE_JSON) {
@@ -2111,12 +2075,13 @@ static void do_esil_search(RCore *core, struct search_parameters *param, const c
 	if (param->outmode == R_MODE_JSON) {
 		pj_end (param->pj);
 	}
-	r_esil_free (esil);
+	r_esil_fini (&esil);
+	r_reg_arena_pop (core->anal->reg);
 }
 
 #include "cmd_scsearch.inc.c"
 
-static void cb_ref_hit(RCore *core, const RAnalRef *ref, ut64 from, ut64 to, struct search_parameters *param) {
+static void cb_ref_hit(RCore *core, const RAnalRef *ref, ut64 from, ut64 to, RSearchParameters *param) {
 	ut8 buf[32];
 	if (from > ref->addr || to < ref->addr) {
 		return;
@@ -2153,7 +2118,7 @@ static void cb_ref_hit(RCore *core, const RAnalRef *ref, ut64 from, ut64 to, str
 	r_anal_op_fini (&asmop);
 }
 
-static void print_ref_search(RCore *core, ut64 addr, ut64 from, ut64 to, struct search_parameters *param) {
+static void print_ref_search(RCore *core, ut64 addr, ut64 from, ut64 to, RSearchParameters *param) {
 	RVecAnalRef *xrefs = r_anal_xrefs_get (core->anal, addr);
 	if (xrefs) {
 		RAnalRef *ref;
@@ -2197,7 +2162,7 @@ static bool parse_targets(RCore *core, const char *args, RVecSearchAddr *targets
 	return ok;
 }
 
-static void refsearch_targets(RCore *core, int mode, bool print_hits, struct search_parameters *param, const RVecSearchAddr *targets) {
+static void refsearch_targets(RCore *core, int mode, bool print_hits, RSearchParameters *param, const RVecSearchAddr *targets) {
 	const size_t target_count = RVecSearchAddr_length (targets);
 	ut64 scan_addr = UT64_MAX;
 	if (target_count == 1) {
@@ -2227,7 +2192,7 @@ static void refsearch_targets(RCore *core, int mode, bool print_hits, struct sea
 	}
 }
 
-static void esilsearch_targets(RCore *core, struct search_parameters *param, const RVecSearchAddr *targets) {
+static void esilsearch_targets(RCore *core, RSearchParameters *param, const RVecSearchAddr *targets) {
 	const ut64 curseek = core->addr;
 	RListIter *iter;
 	RIOMap *map;
@@ -2261,7 +2226,7 @@ static void esilsearch_targets(RCore *core, struct search_parameters *param, con
 static void cmd_search_aF(RCore *core, const char *input) {
 	bool quiet = *input == 'd';
 	if (*input && *input != ' ' && *input != 'd') {
-		r_core_cmd_help_contains (core, help_msg_slash_a, "aF");
+		r_cons_cmd_help_match (core->cons, help_msg_slash_a, "aF", 0, false);
 		return;
 	}
 	RAnalFunction *fcn;
@@ -2334,7 +2299,7 @@ static bool check_false_positive(const char *s) {
 }
 
 // XXX must use searchhit and be generic RSearchHit *hit) {
-static void search_hit_at(RCore *core, struct search_parameters *param, RCoreAsmHit *hit, const char *str) {
+static void search_hit_at(RCore *core, RSearchParameters *param, RCoreAsmHit *hit, const char *str) {
 	bool asm_sub_names = r_config_get_b (core->config, "asm.sub.names");
 	const int kwidx = core->search->n_kws;
 	const char *cmdhit = r_config_get (core->config, "cmd.hit");
@@ -2381,24 +2346,34 @@ static void search_hit_at(RCore *core, struct search_parameters *param, RCoreAsm
 	}
 	if (param->searchflags) {
 		if (R_STR_ISNOTEMPTY (str)) {
-			// TODO: use the api instead
-			char *s = r_str_newf ("string \"%s\"", str);
-			r_core_cmdf (core, "'0x%08"PFMT64x"'CC %s", hit->addr, s);
-			free (s);
+			char *escaped = r_str_escape (str);
+			if (escaped) {
+				char *comment = r_str_newf ("string \"%s\"", escaped);
+				if (comment) {
+					r_meta_set_string (core->anal, R_META_TYPE_COMMENT, hit->addr, comment);
+					free (comment);
+				}
+				free (escaped);
+			}
 		}
 		if (param->outmode != R_MODE_SIMPLE) {
-			char *flagname = (R_STR_ISNOTEMPTY (str)) // XXX i think hit->code is not used anywhere
-				? r_str_newf ("asm.str.%d_%s_%d", kwidx, str, param->count)
+			char *flagstr = NULL;
+			if (R_STR_ISNOTEMPTY (str)) {
+				flagstr = r_name_filter_dup (str);
+			}
+			char *flagname = R_STR_ISNOTEMPTY (flagstr) // XXX i think hit->code is not used anywhere
+				? r_str_newf ("asm.str.%d_%s_%d", kwidx, flagstr, param->count)
 				: r_str_newf ("%s%d_%d", param->searchprefix, kwidx, param->count);
 			if (flagname) {
 				r_flag_set (core->flags, flagname, hit->addr, hit->len);
 				free (flagname);
 			}
+			free (flagstr);
 		}
 	}
 }
 
-static void do_unkjmp_search(RCore *core, struct search_parameters *param, bool quiet, const char *input) {
+static void do_unkjmp_search(RCore *core, RSearchParameters *param, bool quiet, const char *input) {
 	const int flags = R_ARCH_OP_MASK_ESIL | R_ARCH_OP_MASK_BASIC | R_ARCH_OP_MASK_DISASM;
 	const bool badpages = r_config_get_b (core->config, "search.badpages");
 	RAnalOp aop;
@@ -2591,7 +2566,7 @@ static char *print_analstr(RCore *core, ut64 addr, int maxlen) {
 }
 
 // R2R db/cmd/cmd_search_asm
-static bool do_analstr_search(RCore *core, struct search_parameters *param, bool quiet, const char *input) {
+static bool do_analstr_search(RCore *core, RSearchParameters *param, bool quiet, const char *input) {
 	const bool badpages = r_config_get_b (core->config, "search.badpages");
 	bool silent = false;
 	if (!input) {
@@ -2747,7 +2722,6 @@ static bool do_analstr_search(RCore *core, struct search_parameters *param, bool
 									pj_end (pj);
 								} else {
 									r_strbuf_appendf (rb, "0x%08"PFMT64x" %s\n", firstch, ss);
-									r_name_filter (ss, -1);
 									RCoreAsmHit cah = {
 										.addr = firstch,
 										.len = lastch - firstch,
@@ -2790,7 +2764,7 @@ static bool do_analstr_search(RCore *core, struct search_parameters *param, bool
 	return false;
 }
 
-static bool do_anal_search(RCore *core, struct search_parameters *param, const char *input) {
+static bool do_anal_search(RCore *core, RSearchParameters *param, const char *input) {
 	RSearch *search = core->search;
 	ut64 at;
 	RAnalOp aop;
@@ -2848,9 +2822,9 @@ static bool do_anal_search(RCore *core, struct search_parameters *param, const c
 		case '?':
 		default:
 			if (type == 't') {
-				r_core_cmd_help (core, help_msg_slash_at);
+				r_cons_cmd_help (core->cons, help_msg_slash_at);
 			} else {
-				r_core_cmd_help (core, help_msg_slash_a);
+				r_cons_cmd_help (core->cons, help_msg_slash_a);
 			}
 			return false;
 		}
@@ -3034,7 +3008,7 @@ done:
 	return false;
 }
 
-static void do_section_search(RCore *core, struct search_parameters *param, const char *input) {
+static void do_section_search(RCore *core, RSearchParameters *param, const char *input) {
 	double threshold = 1;
 	bool r2mode = false;
 	if (R_STR_ISNOTEMPTY (input)) {
@@ -3122,33 +3096,81 @@ static void do_section_search(RCore *core, struct search_parameters *param, cons
 	}
 }
 
-static void do_asm_search(RCore *core, struct search_parameters *param, const char *input, int mode, RInterval search_itv) {
+static bool parse_ad_modifiers(RCore *core, const char *input, bool *regexp, bool *every_byte, int *outmode, const char **arg) {
+	const char *p = input + 1;
+	bool has_outmode = false;
+	*regexp = false;
+	*every_byte = false;
+	if (*p == '/') {
+		*regexp = true;
+		p++;
+	}
+	for (; *p && *p != ' '; p++) {
+		switch (*p) {
+		case 'a':
+			if (!*regexp || *every_byte) {
+				goto invalid;
+			}
+			*every_byte = true;
+			break;
+		case 'j':
+		case 'q':
+		case '*':
+			if (has_outmode) {
+				goto invalid;
+			}
+			*outmode = *p == 'j'? R_MODE_JSON
+				: *p == 'q'? R_MODE_SIMPLE: R_MODE_RADARE;
+			has_outmode = true;
+			break;
+		default:
+			goto invalid;
+		}
+	}
+	*arg = p;
+	return true;
+
+invalid:
+	r_core_return_invalid_command (core, "/ad", *p);
+	return false;
+}
+
+static void do_asm_search(RCore *core, RSearchParameters *param, const char *input, int mode, RInterval search_itv) {
 	RCoreAsmHit *hit; // WTF LOL must use RSearchHit in here!
 	RListIter *iter, *itermap;
 	int count = 0;
 	RIOMap *map;
-	bool regexp = input[0] && input[1] == '/'; // "/ad/"
-	bool everyByte = regexp && input[0] && input[1] && input[2] == 'a';
-	char *end_cmd = strchr (input, ' ');
-	if (regexp && input[2] == '?') {
-		r_core_cmd_help_contains (core, help_msg_slash_ad, "/ad/");
+	bool regexp = false;
+	bool everyByte = false;
+	const char *end_cmd = strchr (input, ' ');
+	if (mode == 0 && input[1] == '/' && input[2] == '?' && (!input[3] || input[3] == ' ')) {
+		r_cons_cmd_help_match (core->cons, help_msg_slash_ad, "/ad/", 0, false);
 		return;
 	}
-	switch ((end_cmd ? *(end_cmd - 1) : input[0]? input[1]: 0)) {
-	case 'j':
-		param->outmode = R_MODE_JSON;
-		break;
-	case 'q':
-		param->outmode = R_MODE_SIMPLE;
-		break;
-	case '*':
-		param->outmode = R_MODE_RADARE;
-		break;
-	case '?':
-		r_core_cmd_help (core, help_msg_slash_ad);
-		return;
-	default:
-		break;
+	if (mode == 0) {
+		int outmode = param->outmode;
+		if (!parse_ad_modifiers (core, input, &regexp, &everyByte, &outmode, &end_cmd)) {
+			param->outmode = 0;
+			return;
+		}
+		param->outmode = outmode;
+	} else {
+		switch ((end_cmd ? *(end_cmd - 1) : input[0]? input[1]: 0)) {
+		case 'j':
+			param->outmode = R_MODE_JSON;
+			break;
+		case 'q':
+			param->outmode = R_MODE_SIMPLE;
+			break;
+		case '*':
+			param->outmode = R_MODE_RADARE;
+			break;
+		case '?':
+			r_cons_cmd_help (core->cons, help_msg_slash_ad);
+			return;
+		default:
+			break;
+		}
 	}
 	if (mode == 'o') {
 		everyByte = true;
@@ -3156,12 +3178,12 @@ static void do_asm_search(RCore *core, struct search_parameters *param, const ch
 
 	int maxhits = (int) r_config_get_i (core->config, "search.maxhits");
 	if (param->outmode == R_MODE_JSON) {
+		if (!param->pj) {
+			param->pj = r_core_pj_new (core);
+		}
 		pj_a (param->pj);
 	}
 	r_cons_break_push (core->cons, NULL, NULL);
-	if (everyByte) {
-		input ++;
-	}
 	r_list_foreach (param->boundaries, itermap, map) {
 		if (!r_itv_overlap (search_itv, map->itv)) {
 			continue;
@@ -3174,13 +3196,15 @@ static void do_asm_search(RCore *core, struct search_parameters *param, const ch
 		if (maxhits && count >= maxhits) {
 			break;
 		}
-		RList *hits = r_core_asm_strsearch (core, end_cmd, from, to, maxhits, regexp, everyByte, mode);
+		int remaining = maxhits? maxhits - count: 0;
+		RList *hits = r_core_asm_strsearch (core, end_cmd, from, to, remaining, regexp, everyByte, mode);
 		if (hits) {
 			r_list_foreach (hits, iter, hit) {
 				if (r_cons_is_breaked (core->cons)) {
 					break;
 				}
 				search_hit_at (core, param, hit, NULL);
+				count++;
 			}
 			r_list_free (hits);
 		}
@@ -3193,7 +3217,7 @@ static void do_asm_search(RCore *core, struct search_parameters *param, const ch
 	r_config_set_i (core->config, "search.kwidx", ++core->search->n_kws);
 }
 
-static void do_string_search(RCore *core, RInterval search_itv, struct search_parameters *param) {
+static void do_string_search(RCore *core, RInterval search_itv, RSearchParameters *param) {
 	ut64 at;
 	ut8 *buf;
 	RSearch *search = core->search;
@@ -3348,7 +3372,7 @@ static void search_similar_pattern_in(RCore *core, int count, ut64 from, ut64 to
 			int equal = core->blocksize - diff;
 			if (equal >= count) {
 				int pc = (equal * 100) / core->blocksize;
-				r_cons_printf (core->cons, "0x%08"PFMT64x " %4d/%d %3d%%  ", addr, equal, bsz, pc);
+				r_cons_printf (core->cons, "0x%08"PFMT64x " %4d/%"PFMT64u" %3d%%  ", addr, equal, bsz, pc);
 				ut8 ptr[2] = {
 					(ut8)(pc * 2.5), 0
 				};
@@ -3360,7 +3384,7 @@ static void search_similar_pattern_in(RCore *core, int count, ut64 from, ut64 to
 	free (block);
 }
 
-static void search_similar_pattern(RCore *core, int count, struct search_parameters *param) {
+static void search_similar_pattern(RCore *core, int count, RSearchParameters *param) {
 	RIOMap *p;
 	RListIter *iter;
 	r_cons_break_push (core->cons, NULL, NULL);
@@ -3381,7 +3405,7 @@ static bool isArm(RCore *core) {
 }
 
 void _CbInRangeSearchV(RCore *core, ut64 from, ut64 to, int vsize, void *user) {
-	struct search_parameters *param = user;
+	RSearchParameters *param = user;
 	const bool isarm = isArm (core);
 	// this is expensive operation that could be cached but is a callback
 	// and for not messing adding a new param
@@ -3666,7 +3690,7 @@ static void __core_cmd_search_asm_infinite(RCore *core, const char *arg) {
 
 static void cmd_search_xn(RCore *core, const char *input) {
 	if (strchr (input, '?')) {
-		r_core_cmd_help_match (core, help_msg_slash_x, "/xn");
+		r_cons_cmd_help_match (core->cons, help_msg_slash_x, "/xn", 0, true);
 		return;
 	}
 	char sizeChar = input[2];
@@ -3734,7 +3758,7 @@ static void cmd_search_xn(RCore *core, const char *input) {
 
 static void cmd_search_xv(RCore *core, const char *input) {
 	if (strchr (input, '?')) {
-		r_core_cmd_help_match (core, help_msg_slash_x, "/xv");
+		r_cons_cmd_help_match (core->cons, help_msg_slash_x, "/xv", 0, true);
 		return;
 	}
 	char sizeChar = input[2];
@@ -4081,8 +4105,7 @@ static void cmd_search_baddr(RCore *core, const char *input) {
 	RBinObject *obj = r_bin_cur_object (core->bin);
 	if (obj) {
 		RBinString *s;
-		RListIter *iter;
-		r_list_foreach (obj->strings, iter, s) {
+		R_VEC_FOREACH (&obj->strings, s) {
 			if (strstr (s->string, "0x")) {
 				ut64 n = r_num_math (NULL, s->string);
 				appendbaddr (res, n);
@@ -4111,14 +4134,14 @@ static void cmd_search_baddr(RCore *core, const char *input) {
 	r_list_free (bounds);
 }
 
-static bool cmd_search_gadget(RCore *core, RInterval search_itv, const char *input, struct search_parameters *param) {
+static bool cmd_search_gadget(RCore *core, RInterval search_itv, const char *input, RSearchParameters *param) {
 	if (*input == '?') {
-		r_core_cmd_help (core, help_msg_slash_G);
+		r_cons_cmd_help (core->cons, help_msg_slash_G);
 		return true;
 	}
 	if (*input == 'k') {
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_slash_Gk);
+			r_cons_cmd_help (core->cons, help_msg_slash_Gk);
 		} else {
 			rop_kuery (core, input + 1, param->pj);
 		}
@@ -4126,7 +4149,7 @@ static bool cmd_search_gadget(RCore *core, RInterval search_itv, const char *inp
 	}
 	if (*input == 'R' || *input == 'C' || *input == 'J') {
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_slash_G);
+			r_cons_cmd_help (core->cons, help_msg_slash_G);
 		} else {
 			r_core_search_rop (core, search_itv, *input, 0, input + 1, input[1] == '/', param);
 		}
@@ -4171,10 +4194,68 @@ static bool cmd_search_gadget(RCore *core, RInterval search_itv, const char *inp
 			s++;
 		} while (*s);
 
-		print_rop (core, hitlist, param->pj, mode, NULL);
+		RCoreGadgetEsilInfo esil_info = {0};
+		const bool crop = r_config_get_b (core->config, "gadget.cond");
+		const bool gadget_esil = r_config_get_b (core->config, "gadget.esil");
+		const RCoreGadgetEsilInfo *info = gadget_analyze_info (core, hitlist, 0, crop, gadget_esil, &esil_info)
+			? &esil_info: NULL;
+		print_rop (core, hitlist, param->pj, mode, info);
 		r_list_free (hitlist);
 	}
 	return true;
+}
+
+static void cmd_search_magic(RCore *core, RSearchParameters *param, const char *file, bool text) {
+	if (core->magic) {
+		r_magic_free (core->magic);
+		core->magic = NULL;
+	}
+
+	RSearchKeyword *kw = r_search_keyword_new_hexmask ("00", NULL);
+	kw->keyword_length = 1;
+	r_search_reset (core->search, R_SEARCH_MAGIC);
+	r_search_kw_add (core->search, kw);
+
+	if (param->outmode == R_MODE_JSON) {
+		pj_a (param->pj);
+	}
+
+	int maxHits = r_config_get_i (core->config, "search.maxhits");
+	MagicContext mc = {
+		.core = core,
+		.ofile = NULL,
+		.hits = 0,
+		.text = text
+	};
+	ut64 addr;
+	RListIter *iter;
+	RIOMap *map;
+	r_list_foreach (param->boundaries, iter, map) {
+		if (param->outmode != R_MODE_JSON) {
+			eprintf ("-- %"PFMT64x" %"PFMT64x"\n", r_io_map_begin (map), r_io_map_end (map));
+		}
+		r_cons_break_push (core->cons, NULL, NULL);
+		for (addr = r_io_map_begin (map); addr < r_io_map_end (map); addr++) {
+			if (r_cons_is_breaked (core->cons)) {
+				break;
+			}
+			int ret = magic_at (&mc, kw, file, addr, 0, false,
+					param->outmode == R_MODE_JSON? param->pj: NULL);
+			if (ret == -1) {
+				break;
+			}
+			if (maxHits && mc.hits >= maxHits) {
+				break;
+			}
+			addr += ret - 1;
+		}
+		r_cons_clear_line (core->cons, true, true);
+		r_cons_break_pop (core->cons);
+	}
+	free (mc.ofile);
+	if (param->outmode == R_MODE_JSON) {
+		pj_end (param->pj);
+	}
 }
 
 static int cmd_search(void *data, const char *input) {
@@ -4182,7 +4263,7 @@ static int cmd_search(void *data, const char *input) {
 	bool dosearch_read = false;
 	int errcode = -1;
 	RCore *core = (RCore *) data;
-	struct search_parameters param = {
+	RSearchParameters param = {
 		.core = core,
 		.cmd_hit = r_config_get (core->config, "cmd.hit"),
 		.outmode = 0,
@@ -4287,7 +4368,7 @@ reread:
 		goto reread;
 	case 'b': // "/b" backward search
 		if (*(++input) == '?') {
-			r_core_cmd_help (core, help_msg_slash_backward);
+			r_cons_cmd_help (core->cons, help_msg_slash_backward);
 			goto beach;
 		}
 		param_offset--;
@@ -4310,7 +4391,7 @@ reread:
 		goto beach;
 	case 'o': { // "/o" print the offset of the Previous opcode
 			  if (input[1] == '?') {
-				  r_core_cmd_help_match (core, help_msg_slash, "/o");
+				  r_cons_cmd_help_match (core->cons, help_msg_slash, "/o", 0, true);
 				  break;
 			  }
 			  ut64 addr, n = input[param_offset - 1] ? r_num_math (core->num, input + param_offset) : 1;
@@ -4322,6 +4403,10 @@ reread:
 				  addr = UT64_MAX;
 				  (void)r_core_asm_bwdis_len (core, NULL, &addr, n);
 			  }
+			  if (addr == UT64_MAX) {
+				  // no window disassembles cleanly, fall back to the same walk as pd
+				  addr = r_core_prevop_addr_force (core, core->addr, n);
+			  }
 			  if (param.outmode == R_MODE_JSON) {
 				  r_cons_printf (core->cons, "[%"PFMT64u "]", addr);
 			  } else {
@@ -4331,7 +4416,7 @@ reread:
 		break;
 	case 'O': { // "/O" alternative to "/o"
 		if (input[1] == '?') {
-			r_core_cmd_help_match (core, help_msg_slash, "/O");
+			r_cons_cmd_help_match (core->cons, help_msg_slash, "/O", 0, true);
 			break;
 		}
 		ut64 addr, n = input[param_offset - 1] ? r_num_math (core->num, input + param_offset) : 1;
@@ -4364,7 +4449,7 @@ reread:
 		case 'e': // "/re"
 			if (input[2] && input[2] != ' ') {
 				if (input[2] == '?') {
-					r_core_cmd_help_match (core, help_msg_slash_r, "/re");
+					r_cons_cmd_help_match (core->cons, help_msg_slash_r, "/re", 0, true);
 					dosearch = false;
 				}
 				break;
@@ -4406,7 +4491,7 @@ reread:
 			}
 			break;
 		case '?':
-			r_core_cmd_help (core, help_msg_slash_r);
+			r_cons_cmd_help (core->cons, help_msg_slash_r);
 			dosearch = false;
 			break;
 		default:
@@ -4419,15 +4504,15 @@ reread:
 	case 'a': // "/a"
 		switch (input[1]) {
 		case '?':
-			r_core_cmd_help (core, help_msg_slash_a);
+			r_cons_cmd_help (core->cons, help_msg_slash_a);
 			break;
 		case 'g': // "/ag" - search in graph paths
 			cmd_search_ag (core, input + 1);
 			goto beach;
 		case 'd': // "/ad"
 			dosearch = false;
-			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/ad");
+			if (input[2] == '?' && (!input[3] || input[3] == ' ')) {
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/ad", 0, true);
 			} else {
 				do_asm_search (core, &param, input + 1, 0, search_itv);
 			}
@@ -4435,7 +4520,7 @@ reread:
 		case 'e': // "/ae"
 			dosearch = false;
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/ae");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/ae", 0, true);
 			} else {
 				do_asm_search (core, &param, input + 2, 'e', search_itv);
 			}
@@ -4443,7 +4528,7 @@ reread:
 		case 'c': // "/ac"
 			dosearch = false;
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/ac");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/ac", 0, true);
 			} else {
 				do_asm_search (core, &param, input + 2, 'c', search_itv);
 			}
@@ -4451,7 +4536,7 @@ reread:
 		case 'o':  // "/ao"
 			dosearch = false;
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/ao");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/ao", 0, true);
 			} else {
 				do_asm_search (core, &param, input + 2, 'o', search_itv);
 			}
@@ -4459,7 +4544,7 @@ reread:
 		case 'a': // "/aa"
 			dosearch = false;
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/aa");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/aa", 0, true);
 			} else {
 				do_asm_search (core, &param, input + 2, 'a', search_itv);
 
@@ -4467,7 +4552,7 @@ reread:
 			break;
 		case 'i': // "/ai"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/ai");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/ai", 0, true);
 			} else {
 				do_asm_search (core, &param, input + 2, 'i', search_itv);
 			}
@@ -4476,7 +4561,7 @@ reread:
 			if (input[2] == 'f') {
 				cmd_slash_ab (core, (int)r_num_math (core->num, input + 2), true);
 			} else if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/ab");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/ab", 0, true);
 			} else if (input[2] == ' ' || input[2] == 0) {
 				cmd_slash_ab (core, (int)r_num_math (core->num, input + 2), false);
 			} else {
@@ -4485,14 +4570,14 @@ reread:
 			break;
 		case '1': // "/a1"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/a1");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/a1", 0, true);
 			} else {
 				cmd_search_a1 (core, (int)r_num_math (core->num, input + 2));
 			}
 			break;
 		case 'I': //  "/aI" - infinite
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/aI");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/aI", 0, true);
 			} else {
 				__core_cmd_search_asm_infinite (core, r_str_trim_head_ro (input + 1));
 			}
@@ -4514,10 +4599,10 @@ reread:
 			break;
 		case 's': // "/asl"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/as");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/as", 0, true);
 			} else if (input[2] == 'l') { // "asl"
 				if (input[2] == '?') {
-					r_core_cmd_help_match (core, help_msg_slash_a, "/as");
+					r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/as", 0, true);
 				} else {
 					r_core_call (core, "asl");
 				}
@@ -4528,7 +4613,7 @@ reread:
 			break;
 		case 'u': // "/au"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_a, "/az");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/az", 0, true);
 			} else {
 				do_unkjmp_search (core, &param, false, r_str_trim_head_ro (input + 2));
 			}
@@ -4536,7 +4621,7 @@ reread:
 		case 'z': // "/az"
 			switch (input[2]) {
 			case '?': // "/az"
-				r_core_cmd_help_match (core, help_msg_slash_a, "/az");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/az", 0, true);
 				break;
 			case 'q': // "/azq"
 				do_analstr_search (core, &param, true, r_str_trim_head_ro (input + 3));
@@ -4556,7 +4641,7 @@ reread:
 				do_analstr_search (core, &param, false, "");
 				break;
 			default:
-				r_core_cmd_help_match (core, help_msg_slash_a, "/az");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_a, "/az", 0, true);
 				break;
 			}
 			dosearch = false;
@@ -4570,7 +4655,7 @@ reread:
 		dosearch = true;
 		switch (input[1]) {
 		case '?':
-			r_core_cmd_help (core, help_msg_slash_c);
+			r_cons_cmd_help (core->cons, help_msg_slash_c);
 			goto beach;
 
 		case 'k': // "/ck"
@@ -4621,7 +4706,7 @@ reread:
 				char *space = strchr (input, ' ');
 				const char *arg = space? r_str_trim_head_ro (space + 1): NULL;
 				if (!arg || input[2] == '?') {
-					r_core_cmd_help (core, help_msg_slash_cc);
+					r_cons_cmd_help (core->cons, help_msg_slash_cc);
 					goto beach;
 				}
 				char *s = strdup (arg);
@@ -4649,7 +4734,7 @@ reread:
 					free (hashValue);
 					r_core_return_value (core, 0);
 				} else {
-					r_core_cmd_help (core, help_msg_slash_cc);
+					r_cons_cmd_help (core->cons, help_msg_slash_cc);
 				}
 				free (s);
 				goto beach;
@@ -4732,7 +4817,7 @@ reread:
 				char *space = strchr (input, ' ');
 				const char *arg = space? r_str_trim_head_ro (space + 1): NULL;
 				if (!arg || *(space - 1) == '?') {
-					r_core_cmd_help_match (core, help_msg_slash_c, "/ca");
+					r_cons_cmd_help_match (core->cons, help_msg_slash_c, "/ca", 0, true);
 					goto beach;
 				} else {
 					if (input[2] == 'j') {
@@ -4784,14 +4869,14 @@ reread:
 				char *space = strchr (input, ' ');
 				const char *arg = space? r_str_trim_head_ro (space + 1): NULL;
 				if (!arg || *(space - 1) == '?') {
-					r_core_cmd_help_match (core, help_msg_slash_c, "/cp");
+					r_cons_cmd_help_match (core->cons, help_msg_slash_c, "/cp", 0, true);
 					goto beach;
 				} else {
 					char *p = strchr (arg, ' ');
 					if (p) {
 						*p++ = 0;
 					} else {
-						r_core_cmd_help_match (core, help_msg_slash_c, "/cp");
+						r_cons_cmd_help_match (core->cons, help_msg_slash_c, "/cp", 0, true);
 						goto beach;
 					}
 
@@ -4823,17 +4908,17 @@ reread:
 			}
 		default: {
 			dosearch = false;
-			r_core_cmd_help (core, help_msg_slash_c);
+			r_cons_cmd_help (core->cons, help_msg_slash_c);
 		}
 		}
 	} break;
 	case 'm': // "/m"
 		dosearch = false;
 		if (input[1] == '?') { // "/me"
-			r_core_cmd_help (core, help_msg_slash_magic);
+			r_cons_cmd_help (core->cons, help_msg_slash_magic);
 		} else if (input[1] == 'b') { // "/mb"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_magic, "/mb");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_magic, "/mb", 0, true);
 				break;
 			}
 			bool bin_verbose = r_config_get_i (core->config, "bin.verbose");
@@ -4843,7 +4928,7 @@ reread:
 			r_config_set_b (core->config, "bin.verbose", bin_verbose);
 		} else if (input[1] == 'm') { // "/mm"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_magic, "/mm");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_magic, "/mm", 0, true);
 				break;
 			}
 			ut64 addr = search_itv.addr;
@@ -4875,71 +4960,42 @@ reread:
 			eprintf ("\n");
 		} else if (input[1] == 'e') { // "/me"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_magic, "/me");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_magic, "/me", 0, true);
 				break;
 			}
 			r_cons_printf (core->cons, "* r2 thinks%s\n", input + 2);
+		} else if (input[1] == 't') { // "/mt"
+			const char *file = NULL;
+			if (input[2] == '?') {
+				r_cons_cmd_help_match (core->cons, help_msg_slash_magic, "/mt", 0, true);
+			} else if (input[2] == ' ') {
+				file = input + 3;
+				cmd_search_magic (core, &param, file, true);
+			} else if (input[2] == '\0') {
+				cmd_search_magic (core, &param, NULL, true);
+			} else if (input[2] == 'j' && (input[3] == '\0' || input[3] == ' ')) {
+				file = input[3] == ' '? input + 4: NULL;
+				cmd_search_magic (core, &param, file, true);
+			} else {
+				r_cons_cmd_help (core->cons, help_msg_slash_magic);
+			}
 		} else if (input[1] == ' ' || input[1] == '\0' || param.outmode == R_MODE_JSON) {
-			int ret;
-			const char *file = input[param_offset - 1]? input + param_offset: NULL;
-			ut64 addr = search_itv.addr;
-			RListIter *iter;
-			RIOMap *map;
-			RSearchKeyword *kw;
-
-			kw = r_search_keyword_new_hexmask ("00", NULL);
-			kw->keyword_length = 1;
-			r_search_reset (core->search, R_SEARCH_MAGIC);
-			r_search_kw_add (core->search, kw);
-
-			if (param.outmode == R_MODE_JSON) {
-				pj_a (param.pj);
+			const char *file = NULL;
+			if (input[param_offset - 1]) {
+				file = input + param_offset;
 			}
-
-			int maxHits = r_config_get_i (core->config, "search.maxhits");
-			MagicContext mc = {
-				.core = core,
-				.ofile = NULL,
-				.hits = 0
-			};
-			r_list_foreach (param.boundaries, iter, map) {
-				if (param.outmode != R_MODE_JSON) {
-					eprintf ("-- %"PFMT64x" %"PFMT64x"\n", r_io_map_begin (map), r_io_map_end (map));
-				}
-				r_cons_break_push (core->cons, NULL, NULL);
-				for (addr = r_io_map_begin (map); addr < r_io_map_end (map); addr++) {
-					if (r_cons_is_breaked (core->cons)) {
-						break;
-					}
-					ret = magic_at (&mc, kw, file, addr, 0, false,
-							param.outmode == R_MODE_JSON? param.pj: NULL);
-					if (ret == -1) {
-						// something went terribly wrong.
-						break;
-					}
-					if (maxHits && mc.hits >= maxHits) {
-						break;
-					}
-					addr += ret - 1;
-				}
-				r_cons_clear_line (core->cons, true, true);
-				r_cons_break_pop (core->cons);
-			}
-			free (mc.ofile);
-			if (param.outmode == R_MODE_JSON) {
-				pj_end (param.pj);
-			}
+			cmd_search_magic (core, &param, file, false);
 		} else {
-			r_core_cmd_help (core, help_msg_slash_magic);
+			r_cons_cmd_help (core->cons, help_msg_slash_magic);
 		}
 		r_cons_clear_line (core->cons, true, true);
 		break;
 	case 'p': // "/p"
 		if (input[1] == '?') { // "/p" -- find next pattern
-			r_core_cmd_help (core, help_msg_slash_pattern);
+			r_cons_cmd_help (core->cons, help_msg_slash_pattern);
 		} else if (input[1] == 'p') { // "/pp" -- find next prelude
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_slash_pattern, "/pp");
+				r_cons_cmd_help_match (core->cons, help_msg_slash_pattern, "/pp", 0, true);
 			} else {
 				__core_cmd_search_backward_prelude (core, false, true);
 			}
@@ -4992,14 +5048,14 @@ reread:
 				}
 			}
 			if (err) {
-				r_core_cmd_help_match (core, help_msg_slash, "/V");
+				r_cons_cmd_help_match (core->cons, help_msg_slash, "/V", 0, true);
 			}
 		}
 		dosearch = false;
 		break;
 	case 'v': // "/v"
 		if (input[1] == '?') {
-			r_core_cmd_help_match (core, help_msg_slash, "/v");
+			r_cons_cmd_help_match (core->cons, help_msg_slash, "/v", 0, true);
 			break;
 		}
 		r_search_reset (core->search, R_SEARCH_KEYWORD);
@@ -5016,7 +5072,7 @@ reread:
 				bsize = sizeof (ut64) * len;
 				v_buf = v_writebuf (core, nums, len, '8', bsize);
 			} else {
-				r_core_cmd_help_match (core, help_msg_slash, "/v");
+				r_cons_cmd_help_match (core->cons, help_msg_slash, "/v", 0, true);
 			}
 			break;
 		case '1':
@@ -5024,7 +5080,7 @@ reread:
 				bsize = sizeof (ut8) * len;
 				v_buf = v_writebuf (core, nums, len, '1', bsize);
 			} else {
-				r_core_cmd_help_match (core, help_msg_slash, "/v");
+				r_cons_cmd_help_match (core->cons, help_msg_slash, "/v", 0, true);
 			}
 			break;
 		case '2':
@@ -5032,7 +5088,7 @@ reread:
 				bsize = sizeof (ut16) * len;
 				v_buf = v_writebuf (core, nums, len, '2', bsize);
 			} else {
-				r_core_cmd_help_match (core, help_msg_slash, "/v");
+				r_cons_cmd_help_match (core->cons, help_msg_slash, "/v", 0, true);
 			}
 			break;
 		default: // default size
@@ -5043,7 +5099,7 @@ reread:
 					v_buf = v_writebuf (core, nums, len, '4', bsize);
 				}
 			} else {
-				r_core_cmd_help_match (core, help_msg_slash, "/v");
+				r_cons_cmd_help_match (core->cons, help_msg_slash, "/v", 0, true);
 			}
 			break;
 		}
@@ -5057,12 +5113,12 @@ reread:
 		break;
 	case 'w': // "/w" search wide string, includes ignorecase search functionality (/wi cmd)!
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_slash_wide_string);
+			r_cons_cmd_help (core->cons, help_msg_slash_wide_string);
 			break;
 		}
 		if (input[2]) {
 			if (input[2] == '?') { // "/w?"
-				r_core_cmd_help (core, help_msg_slash_wide_string);
+				r_cons_cmd_help (core->cons, help_msg_slash_wide_string);
 				break;
 			}
 			if (input[1] == 'j' || input[2] == 'j') { // "/wj"
@@ -5095,7 +5151,7 @@ reread:
 		break;
 	case 'i': // "/i"
 		if (input[1] == '?') {
-			r_core_cmd_help_match (core, help_msg_slash, "/i");
+			r_cons_cmd_help_match (core->cons, help_msg_slash, "/i", 0, true);
 			break;
 		}
 		if (input[param_offset - 1] != ' ') {
@@ -5132,7 +5188,7 @@ reread:
 	case 'k': // "/k" Rabin Karp String search
 		{
 			if (input[1] == '?') {
-				r_core_cmd_help (core, help_msg_slash_k);
+				r_cons_cmd_help (core->cons, help_msg_slash_k);
 				break;
 			}
 			inp = r_str_trim_dup (input + 1 + ignorecase + (param.outmode == R_MODE_JSON ? 1 : 0));
@@ -5152,7 +5208,7 @@ reread:
 		break;
 	case 'e': // "/e" match regexp
 		if (input[1] == '?') {
-			r_core_cmd_help_match (core, help_msg_slash, "/e");
+			r_cons_cmd_help_match (core->cons, help_msg_slash, "/e", 0, true);
 		} else if (input[1]) {
 			if (input[1] == 'j') {
 				param.outmode = R_MODE_JSON;
@@ -5183,7 +5239,7 @@ reread:
 		goto beach;
 	case 'd': // "/d" search delta key
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_slash_delta);
+			r_cons_cmd_help (core->cons, help_msg_slash_delta);
 			break;
 		}
 		if (input[1]) {
@@ -5201,7 +5257,7 @@ reread:
 
 		char *p, *arg = r_str_trim_dup (input + 1);
 		if (*arg == '?') {
-			r_core_cmd_help_match (core, help_msg_slash, "/h");
+			r_cons_cmd_help_match (core->cons, help_msg_slash, "/h", 0, true);
 			break;
 		}
 		// "/h*" we do not add a flag for the search hit.
@@ -5234,7 +5290,7 @@ reread:
 	break;
 	case 'f': // "/f" forward search
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_slash_forward);
+			r_cons_cmd_help (core->cons, help_msg_slash_forward);
 			break;
 		}
 		if (core->addr) {
@@ -5302,12 +5358,12 @@ reread:
 			r_str_argv_free (args);
 			free (buf);
 		} else {
-			r_core_cmd_help_match (core, help_msg_slash, "/F");
+			r_cons_cmd_help_match (core->cons, help_msg_slash, "/F", 0, true);
 		}
 		break;
 	case 'x': // "/x" search hex
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_slash_x);
+			r_cons_cmd_help (core->cons, help_msg_slash_x);
 		} else if (input[1] == 'n') {
 			cmd_search_xn (core, input);
 		} else if (input[1] == 'v') {
@@ -5337,7 +5393,7 @@ reread:
 		break;
 	case 's': // "/s"
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_slash_sections);
+			r_cons_cmd_help (core->cons, help_msg_slash_sections);
 			break;
 		}
 		if (input[1] == 'j') { // "/sj"
@@ -5381,7 +5437,7 @@ again:
 			free (str);
 			free (buf);
 		} else {
-			r_core_cmd_help_match (core, help_msg_slash, "/+");
+			r_cons_cmd_help_match (core->cons, help_msg_slash, "/+", 0, true);
 		}
 		break;
 	case 'z': // "/z" search strings of min-max range
@@ -5389,7 +5445,7 @@ again:
 		char *p;
 		ut32 min, max;
 		if (!input[1]) {
-			r_core_cmd_help_match (core, help_msg_slash, "/z");
+			r_cons_cmd_help_match (core->cons, help_msg_slash, "/z", 0, true);
 			break;
 		}
 		const char *maxstr = NULL;
@@ -5398,7 +5454,7 @@ again:
 			maxstr = r_str_trim_head_ro (p + 1);
 			max = r_num_math (core->num, maxstr);
 		} else {
-			r_core_cmd_help_match (core, help_msg_slash, "/z");
+			r_cons_cmd_help_match (core->cons, help_msg_slash, "/z", 0, true);
 			break;
 		}
 		const char *minstr = r_str_trim_head_ro (input + 2);
@@ -5429,7 +5485,7 @@ again:
 	}
 	break;
 	case '?': // "/?"
-		r_core_cmd_help (core, help_msg_slash);
+		r_cons_cmd_help (core->cons, help_msg_slash);
 		break;
 	default:
 		R_LOG_INFO ("See /? for help");

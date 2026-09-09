@@ -52,6 +52,34 @@ R_IPI bool r_coff_supported_arch(const ut8 *buf) {
 	return r_coff_supported_arch_le (buf) || r_coff_supported_arch_be (buf);
 }
 
+R_IPI bool r_coff_check(RBuffer *b) {
+	ut8 tmp[20];
+	int r = r_buf_read_at (b, 0, tmp, sizeof (tmp));
+	if (r < sizeof (tmp) || !r_coff_supported_arch (tmp)) {
+		return false;
+	}
+	// the two byte magic is too weak, so validate the header fields
+	// against the file size to reject false positives
+	const bool be = r_coff_supported_arch_be (tmp);
+	const ut64 size = r_buf_size (b);
+	const ut16 magic = r_read_ble16 (tmp, be);
+	const ut16 nscns = r_read_ble16 (tmp + 2, be);
+	const ut32 symptr = r_read_ble32 (tmp + 8, be);
+	const ut32 nsyms = r_read_ble32 (tmp + 12, be);
+	const ut16 opthdr = r_read_ble16 (tmp + 16, be);
+	ut64 scn_off = sizeof (struct coff_hdr) + opthdr;
+	if (magic == COFF_FILE_TI_COFF) {
+		scn_off += 2; // target id
+	}
+	if (scn_off + (ut64)nscns * sizeof (struct coff_scn_hdr) > size) {
+		return false;
+	}
+	if (nsyms > 0 && (ut64)symptr + (ut64)nsyms * sizeof (struct coff_symbol) > size) {
+		return false;
+	}
+	return true;
+}
+
 // copied from bfd
 static bool r_coff_decode_base64(const char *str, ut32 len, ut32 *res) {
 	ut32 i;
@@ -88,38 +116,27 @@ static bool r_coff_decode_base64(const char *str, ut32 len, ut32 *res) {
 }
 
 R_IPI char *r_coff_symbol_name(RBinCoffObj *obj, void *ptr) {
+	if (!obj || !ptr) {
+		return NULL;
+	}
 	char n[256] = {0};
+	char name[9] = {0};
 	int len = 0;
 	ut32 offset = 0; // offset into the string table.
 
-	typedef union {
-		char name[9];
-		struct {
-			ut32 zero;
-			ut32 offset;
-		};
-	} NameOff;
-	NameOff no;
-	memcpy (&no, ptr, sizeof (no));
-	NameOff *p = &no;
-	if (!ptr) {
-		return NULL;
+	memcpy (name, ptr, 8);
+	if (r_read_ble32 (name, obj->endian) && *name != '/') {
+		return r_str_ndup (name, 8);
 	}
-
-	if (p->zero && *p->name != '/') {
-		return r_str_ndup (p->name, 8);
-	}
-	if (*p->name == '/') {
-		char *offset_str = (p->name + 1);
-		no.name[8] = 0;
+	if (*name == '/') {
+		char *offset_str = name + 1;
 		if (*offset_str == '/') {
-			r_coff_decode_base64 (p->name + 2, 6, &offset);
+			r_coff_decode_base64 (name + 2, 6, &offset);
 		} else {
-			// ensure null termination
 			offset = atoi (offset_str);
 		}
 	} else {
-		offset = p->offset;
+		offset = r_read_ble32 (name + 4, obj->endian);
 	}
 
 	// Calculate the actual pointer to the symbol/section name we're interested in.
@@ -146,6 +163,10 @@ R_IPI char *r_coff_symbol_name(RBinCoffObj *obj, void *ptr) {
 		return NULL;
 	}
 #endif
+	if (obj->strtab && offset < obj->strtab_size) {
+		ut64 maxlen = R_MIN (obj->strtab_size - offset, sizeof (n) - 1);
+		return r_str_ndup ((const char *)obj->strtab + offset, (int)maxlen);
+	}
 	len = r_buf_read_at (obj->b, name_ptr, (ut8 *)n, sizeof (n));
 	if (len < 1) {
 		return NULL;
@@ -389,7 +410,7 @@ static bool r_bin_xcoff_init_opt_hdr(RBinCoffObj *obj) {
 #endif
 
 static bool r_bin_coff_init_scn_hdr(RBinCoffObj *obj) {
-	int ret;
+	st64 ret;
 	size_t size;
 	ut32 f_nscns;
 
@@ -425,8 +446,12 @@ static bool r_bin_coff_init_scn_hdr(RBinCoffObj *obj) {
 	if (!obj->scn_hdrs) {
 		return false;
 	}
-	ret = r_buf_fread_at (obj->b, offset, (ut8 *)obj->scn_hdrs,
-			obj->endian? "8c6I2S1I": "8c6i2s1i", f_nscns);
+	if (obj->endian == R_SYS_ENDIAN) {
+		ret = r_buf_read_at (obj->b, offset, (ut8 *)obj->scn_hdrs, size);
+	} else {
+		ret = r_buf_fread_at (obj->b, offset, (ut8 *)obj->scn_hdrs,
+				obj->endian? "8c6I2S1I": "8c6i2s1i", f_nscns);
+	}
 	// 8 + (6*4) + (2*2) + (4) = 40
 	if (ret != size) {
 		R_FREE (obj->scn_hdrs);
@@ -487,8 +512,34 @@ static bool r_bin_xcoff_init_ldsyms(RBinCoffObj *obj) {
 	return true;
 }
 
+static bool r_bin_coff_init_strtab(RBinCoffObj *obj, ut32 f_symptr, ut32 f_nsyms, ut32 symbol_size) {
+	size_t symtab_size;
+	if (!f_symptr || !f_nsyms || r_mul_overflow ((size_t)symbol_size, (size_t)f_nsyms, &symtab_size)) {
+		return true;
+	}
+	ut64 offset = f_symptr + (ut64)symtab_size;
+	if (offset > obj->size || offset + sizeof (ut32) > obj->size) {
+		return true;
+	}
+	ut32 strtab_size = r_buf_read_ble32_at (obj->b, offset, obj->endian);
+	if (strtab_size < sizeof (ut32) || strtab_size > obj->size - offset) {
+		return true;
+	}
+	obj->strtab = malloc (strtab_size);
+	if (!obj->strtab) {
+		return false;
+	}
+	obj->strtab_size = strtab_size;
+	st64 len = r_buf_read_at (obj->b, offset, obj->strtab, strtab_size);
+	if (len != strtab_size) {
+		R_FREE (obj->strtab);
+		obj->strtab_size = 0;
+	}
+	return true;
+}
+
 static bool r_bin_coff_init_symtable(RBinCoffObj *obj) {
-	int ret;
+	st64 ret;
 	ut32 f_symptr, f_nsyms;
 	ut32 symbol_size;
 	if (obj->type == COFF_TYPE_BIGOBJ) {
@@ -535,16 +586,27 @@ static bool r_bin_coff_init_symtable(RBinCoffObj *obj) {
 	// XXX RBuf.readAt() is unsafe, so we need to trim down the f_nsyms
 	if (obj->type == COFF_TYPE_BIGOBJ) {
 		obj->bigobj_symbols = symbols;
-		const char *fmt = obj->endian? "8c2I1S2c": "8c2i1s2c";
-		ret = r_buf_fread_at (obj->b, offset, (ut8 *)obj->bigobj_symbols, fmt, f_nsyms);
+		if (obj->endian == R_SYS_ENDIAN) {
+			ret = r_buf_read_at (obj->b, offset, (ut8 *)obj->bigobj_symbols, size);
+		} else {
+			const char *fmt = obj->endian? "8c2I1S2c": "8c2i1s2c";
+			ret = r_buf_fread_at (obj->b, offset, (ut8 *)obj->bigobj_symbols, fmt, f_nsyms);
+		}
 	} else {
 		obj->symbols = symbols;
-		const char *fmt = obj->endian? "8c1I2S2c": "8c1i2s2c";
-		ret = r_buf_fread_at (obj->b, offset, (ut8 *)obj->symbols, fmt, f_nsyms);
+		if (obj->endian == R_SYS_ENDIAN) {
+			ret = r_buf_read_at (obj->b, offset, (ut8 *)obj->symbols, size);
+		} else {
+			const char *fmt = obj->endian? "8c1I2S2c": "8c1i2s2c";
+			ret = r_buf_fread_at (obj->b, offset, (ut8 *)obj->symbols, fmt, f_nsyms);
+		}
 	}
 	if (ret != size) {
 		R_FREE (obj->bigobj_symbols);
 		R_FREE (obj->symbols);
+		return false;
+	}
+	if (!r_bin_coff_init_strtab (obj, f_symptr, f_nsyms, symbol_size)) {
 		return false;
 	}
 	return true;
@@ -637,6 +699,7 @@ R_IPI void r_bin_coff_free(RBinCoffObj *obj) {
 	if (obj) {
 		free (obj->sym_idx);
 		free (obj->scn_va);
+		free (obj->strtab);
 		free (obj->scn_hdrs);
 		free (obj->x_ldsyms);
 		if (obj->type == COFF_TYPE_BIGOBJ) {

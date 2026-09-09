@@ -75,15 +75,55 @@ static struct {
 	ut8 *buf;
 	ut64 buflen, maxlen;
 	bool valid, init;
+	libgdbr_t *owner;
 } reg_cache;
 
+static bool reg_cache_ensure_size(size_t len) {
+	if ((ut64)len <= reg_cache.maxlen) {
+		reg_cache.init = reg_cache.buf != NULL;
+		return reg_cache.init;
+	}
+	ut8 *buf = realloc (reg_cache.buf, len);
+	if (!buf) {
+		return false;
+	}
+	reg_cache.buf = buf;
+	reg_cache.maxlen = (ut64)len;
+	reg_cache.init = true;
+	return true;
+}
+
+static void reg_cache_fini(void) {
+	R_FREE (reg_cache.buf);
+	reg_cache.buflen = 0;
+	reg_cache.maxlen = 0;
+	reg_cache.valid = false;
+	reg_cache.init = false;
+	reg_cache.owner = NULL;
+}
+
+static void reg_cache_update(libgdbr_t *g) {
+	reg_cache.valid = false;
+	if (!g || g->data_len < 0) {
+		return;
+	}
+	const size_t len = (size_t)g->data_len;
+	if (!reg_cache_ensure_size (len)) {
+		return;
+	}
+	memcpy (reg_cache.buf, g->data, len);
+	reg_cache.buflen = (ut64)len;
+	reg_cache.valid = true;
+	reg_cache.owner = g;
+}
+
 static void reg_cache_init(libgdbr_t *g) {
-	reg_cache.maxlen = g->data_max;
 	reg_cache.buflen = 0;
 	reg_cache.valid = false;
 	reg_cache.init = false;
-	if ((reg_cache.buf = malloc (reg_cache.maxlen))) {
-		reg_cache.init = true;
+	reg_cache.owner = NULL;
+	if (g && g->data_max > 0) {
+		reg_cache_ensure_size ((size_t)g->data_max);
 	}
 }
 
@@ -296,8 +336,9 @@ int gdbr_disconnect(libgdbr_t *g) {
 		goto end;
 	}
 	reg_cache.valid = false;
+	gdbr_stop_reason_fini (&g->stop_reason);
 	g->stop_reason.is_valid = false;
-	free (reg_cache.buf);
+	reg_cache_fini ();
 	if (g->target.valid) {
 		free (g->target.regprofile);
 		free (g->registers);
@@ -672,11 +713,7 @@ static int gdbr_read_registers_lldb(libgdbr_t *g) {
 	if ((ret = handle_lldb_read_reg (g)) < 0) {
 		goto end;
 	}
-	if (reg_cache.init) {
-		reg_cache.buflen = g->data_len;
-		memcpy (reg_cache.buf, g->data, reg_cache.buflen);
-		reg_cache.valid = true;
-	}
+	reg_cache_update (g);
 
 	ret = 0;
 end:
@@ -690,7 +727,7 @@ int gdbr_read_registers(libgdbr_t *g) {
 	if (!g || !g->data) {
 		return -1;
 	}
-	if (reg_cache.init && reg_cache.valid) {
+	if (reg_cache.init && reg_cache.valid && reg_cache.owner == g && reg_cache.buflen <= g->data_max) {
 		g->data_len = reg_cache.buflen;
 		memcpy (g->data, reg_cache.buf, reg_cache.buflen);
 		return 0;
@@ -713,12 +750,7 @@ int gdbr_read_registers(libgdbr_t *g) {
 		ret = -1;
 		goto end;
 	}
-	if (reg_cache.init) {
-		reg_cache.buflen = g->data_len;
-		memset (reg_cache.buf, 0, reg_cache.buflen);
-		memcpy (reg_cache.buf, g->data, reg_cache.buflen);
-		reg_cache.valid = true;
-	}
+	reg_cache_update (g);
 
 	ret = 0;
 end:
@@ -1114,10 +1146,12 @@ int gdbr_write_registers(libgdbr_t *g, char *registers) {
 		goto end;
 	}
 
-	gdbr_read_registers (g);
+	if (gdbr_read_registers (g) < 0) {
+		goto end;
+	}
 	reg_cache.valid = false;
 	len = strlen (registers);
-	buff = calloc (len, sizeof (char));
+	buff = calloc (len + 1, sizeof (char));
 	if (!buff) {
 		ret = -1;
 		goto end;
@@ -1134,10 +1168,18 @@ int gdbr_write_registers(libgdbr_t *g, char *registers) {
 		*name_end = '\0'; // change '=' to '\0'
 
 		// time to find the current register
+		i = 0;
 		while (g->registers[i].size > 0) {
 			if (strcmp (g->registers[i].name, reg) == 0) {
-				const ut64 register_size = g->registers[i].size;
-				const ut64 offset = g->registers[i].offset;
+				const ut64 register_size = g->registers[i].size / 8;
+				const ut64 offset = g->registers[i].offset / 8;
+				if (!register_size || g->data_max < 1 || g->data_len < 1
+				    || offset >= (ut64)g->data_max || register_size > (ut64)g->data_max - offset
+				    || offset >= (ut64)g->data_len || register_size > (ut64)g->data_len - offset) {
+					R_LOG_ERROR ("%s: register %s exceeds data buffer", __func__, reg);
+					ret = -1;
+					goto end;
+				}
 				value = calloc (register_size + 1, 2);
 				if (!value) {
 					ret = -1;
@@ -1147,11 +1189,16 @@ int gdbr_write_registers(libgdbr_t *g, char *registers) {
 				memset (value, '0', register_size * 2);
 				name_end++;
 				// be able to take hex with and without 0x
-				if (name_end[1] == 'x' || name_end[1] == 'X') {
+				if (name_end[0] == '0' && (name_end[1] == 'x' || name_end[1] == 'X')) {
 					name_end += 2;
 				}
-				const int val_len = strlen (name_end); // size of the rest
-				strcpy (value + (register_size * 2 - val_len), name_end);
+				const size_t val_len = strlen (name_end); // size of the rest
+				if (val_len > register_size * 2) {
+					R_LOG_ERROR ("%s: value for register %s is too large", __func__, reg);
+					ret = -1;
+					goto end;
+				}
+				memcpy (value + (register_size * 2 - val_len), name_end, val_len);
 
 				for (x = 0; x < register_size; x++) {
 					g->data[offset + register_size - x - 1] = hex2char (&value[x * 2]);
@@ -1495,7 +1542,7 @@ int gdbr_read_file(libgdbr_t *g, ut8 *buf, ut64 max_len) {
 			ret = -1;
 			goto end;
 		}
-		if ((ret1 = handle_vFile_pread (g, buf + ret)) < 0) {
+		if ((ret1 = handle_vFile_pread (g, buf + ret, max_len - ret)) < 0) {
 			ret = ret1;
 			goto end;
 		}

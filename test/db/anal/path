@@ -151,7 +151,7 @@ pdb @@= 0x000067d0 0x00004df0 0x000132d0 0x000132de 0x00004960
 | `- args(rdx)
 |           0x000067d0      f30f1efa       endbr64
 |           0x000067d4      31ed           xor ebp, ebp
-|           0x000067d6      4989d1         mov r9, rdx                 ; arg3
+|           0x000067d6      4989d1         mov r9, rdx                 ; arg1
 |           0x000067d9      5e             pop rsi
 |           0x000067da      4889e2         mov rdx, rsp
 |           0x000067dd      4883e4f0       and rsp, 0xfffffffffffffff0
@@ -176,7 +176,7 @@ pdb @@= 0x000067d0 0x00004df0 0x000132d0 0x000132de 0x00004960
 |           0x00004e04      4883ec48       sub rsp, 0x48
 |           0x00004e08      488b3e         mov rdi, qword [rsi]        ; int64_t arg1
 |           0x00004e0b      64488b0425..   mov rax, qword fs:[0x28]
-|           0x00004e14      4889442438     mov qword [var_38h], rax
+|           0x00004e14      4889442438     mov qword [canary], rax
 |           0x00004e19      31c0           xor eax, eax
 |           0x00004e1b      e8b0e40000     call fcn.000132d0
 |           ; DATA XREF from main @ 0x5ad1(r)
@@ -190,7 +190,7 @@ pdb @@= 0x000067d0 0x00004df0 0x000132d0 0x000132de 0x00004960
 |           0x00004e4b      e800faffff     call sym.imp.textdomain     ; char *textdomain(char *domainname)
 |           0x00004e50      488d3d8991..   lea rdi, [0x0000dfe0]
 |           0x00004e57      c70597e301..   mov dword [obj.exit_failure], 2 ; [0x231f8:4]=1
-|           0x00004e61      e8fa260100     call fcn.00017560
+|           0x00004e61      e8fa260100     call sub.__cxa_atexit
 |           0x00004e66      c6054bf401..   mov byte [0x000242b8], 1    ; [0x242b8:1]=0
 |           0x00004e6d      48b8000000..   movabs rax, 0x8000000000000000
 |           0x00004e77      488905f2f4..   mov qword [0x00024370], rax ; [0x24370:8]=0
@@ -202,7 +202,7 @@ pdb @@= 0x000067d0 0x00004df0 0x000132d0 0x000132de 0x00004960
 |           0x00004eab      83f802         cmp eax, 2
 |       ,=< 0x00004eae      0f842e0e0000   je 0x5ce2
             ; CALL XREF from main @ 0x4e1b(x)
-/ 176: fcn.000132d0 (char **arg1);
+/ 176: fcn.000132d0 (char *arg1);
 | `- args(rdi)
 |           0x000132d0      f30f1efa       endbr64
 |           0x000132d4      53             push rbx

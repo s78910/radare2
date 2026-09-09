@@ -1,7 +1,6 @@
 /* radare - LGPL - Copyright 2019-2025 - pancake */
 
 #include <r_util/r_table.h>
-#include <r_core.h>
 #include <r_cons.h>
 
 #define READ_SHOW_FLAG(t, bitflag) (((t)->showMode & bitflag) != 0)
@@ -157,7 +156,7 @@ R_API RTableColumn *r_table_column_clone(RTableColumn *col) {
 	return c;
 }
 
-R_API RTable *r_table_new(const char *name) {
+R_API RTable *r_table_new(const char *name, const RTableOptions *options) {
 	RTable *t = R_NEW0 (RTable);
 	t->name = strdup (name);
 	t->cols = r_list_newf (r_table_column_free);
@@ -165,6 +164,9 @@ R_API RTable *r_table_new(const char *name) {
 	t->maxColumnWidth = 32;
 	t->wrapColumns = false;
 	t->widthsDirty = true;
+	if (options) {
+		t->options = *options;
+	}
 	SET_SHOW_HEADER (t, true);
 	SET_SHOW_SUM (t, false);
 	return t;
@@ -215,15 +217,50 @@ static bool __addRow(RTable *t, RList *items, const char *arg, int col) {
 	return false;
 }
 
+static char *r_table_trim_text(const char *str, int width, bool utf8) {
+	if (width < 1) {
+		return strdup ("");
+	}
+	if (r_str_len_utf8_ansi (str) <= width) {
+		return NULL;
+	}
+	char dots[4] = "...";
+	const char *ellipsis = dots;
+	int ellipsis_width = 3;
+	if (utf8) {
+		ellipsis = "\xe2\x80\xa6";
+		ellipsis_width = 1;
+	} else if (width < ellipsis_width) {
+		dots[width] = 0;
+		ellipsis_width = width;
+	}
+	int prefix_width = width - ellipsis_width;
+	char *prefix = prefix_width > 0? r_str_ansi_crop (str, 0, 0, prefix_width, 1): strdup ("");
+	if (!prefix) {
+		return NULL;
+	}
+	const char *reset = strchr (prefix, 0x1b)? Color_RESET: "";
+	char *res = r_str_newf ("%s%s%s", prefix, ellipsis, reset);
+	free (prefix);
+	return res;
+}
+
+static char *r_table_trim_cell(const RTable *t, const char *str, int width) {
+	const bool utf8 = t->options.utf8 || t->options.utf8_curvy;
+	return t->options.trim? r_table_trim_text (str, width, utf8): NULL;
+}
+
 static void wrap_items(RTable *t, RList *items) {
-	if (t->wrapColumns && t->maxColumnWidth > 0) {
+	if (t->wrapColumns && !t->options.wrap && !t->options.trim && t->maxColumnWidth > 0) {
 		char *item;
 		RListIter *iter;
+		const bool utf8 = t->options.utf8 || t->options.utf8_curvy;
+		const int width = R_MAX (1, t->maxColumnWidth - 1);
 		r_list_foreach (items, iter, item) {
-			int itemLength = r_str_len_utf8_ansi (item);
-			if (itemLength + 3 > t->maxColumnWidth) {
-				char *p = (char *)r_str_ansi_chrn (item, t->maxColumnWidth - 3);
-				strcpy (p, "..");
+			char *trimmed = r_table_trim_text (item, width, utf8);
+			if (trimmed) {
+				free (item);
+				iter->data = trimmed;
 			}
 		}
 	}
@@ -369,28 +406,100 @@ R_API void r_table_add_row(RTable *t, const char *name, ...) {
 
 // import / export
 
-static int __strbuf_append_col_aligned_fancy(RTable *t, RStrBuf *sb, RTableColumn *col, char *str) {
-	RCons *cons = (RCons *) t->cons;
-	const char *v_line = (cons && (cons->use_utf8 ||  cons->use_utf8_curvy)) ? RUNE_LINE_VERT : "|";
+static int __strbuf_append_col_aligned_fancy(RTable *t, RStrBuf *sb, RTableColumn *col, const char *str) {
+	const bool use_utf8 = t->options.utf8;
+	const bool use_utf8_curvy = t->options.utf8_curvy;
+	const char *v_line = (use_utf8 || use_utf8_curvy) ? RUNE_LINE_VERT : "|";
+	char *trimmed = r_table_trim_cell (t, str, col->width);
+	if (trimmed) {
+		str = trimmed;
+	}
 	int ll = r_strbuf_length (sb);
+	int len = r_str_len_utf8_ansi (str);
+	int pad = R_MAX (0, col->width - len);
+	int left = 0;
+	int right = pad;
 	switch (col->align) {
 	case R_TABLE_ALIGN_LEFT:
-		r_strbuf_appendf (sb, "%s %-*s ", v_line, col->width, str);
 		break;
 	case R_TABLE_ALIGN_RIGHT:
-		r_strbuf_appendf (sb, "%s %*s ", v_line, col->width, str);
+		left = pad;
+		right = 0;
 		break;
 	case R_TABLE_ALIGN_CENTER:
-		{
-			int len = r_str_len_utf8 (str);
-			int pad = (col->width - len) / 2;
-			int left = col->width - (pad * 2 + len);
-			r_strbuf_appendf (sb, "%s %-*s ", v_line, pad, " ");
-			r_strbuf_appendf (sb, "%-*s ", pad + left, str);
-		}
+		left = pad / 2;
+		right = pad - left;
 		break;
 	}
-	return r_strbuf_length (sb) - ll;
+	r_strbuf_appendf (sb, "%s %*s%s%*s ", v_line, left, "", str, right, "");
+	int res = r_str_len_utf8_ansi (r_strbuf_get (sb) + ll);
+	free (trimmed);
+	return res;
+}
+
+static void row_fancy(RTable *t, RStrBuf *sb, RTableRow *row, const char *v_line) {
+	RListIter *iter;
+	char *item;
+	int c = 0;
+	r_list_foreach (row->items, iter, item) {
+		RTableColumn *col = r_list_get_n (t->cols, c);
+		if (col) {
+			__strbuf_append_col_aligned_fancy (t, sb, col, item);
+		}
+		c++;
+	}
+	r_strbuf_appendf (sb, "%s\n", v_line);
+}
+
+static void lines_free(void *lines) {
+	r_list_free (lines);
+}
+
+static RList *cell_wrap(const char *s, int width) {
+	char *wrapped = r_str_wrap (s, width);
+	if (!wrapped) {
+		return NULL;
+	}
+	RList *lines = r_str_split_duplist (wrapped, "\n", false);
+	free (wrapped);
+	return lines;
+}
+
+static bool wraprow(RTable *t, RStrBuf *sb, RTableRow *row, const char *v_line) {
+	RList *line_cols = r_list_newf (lines_free);
+	RListIter *iter;
+	char *item;
+	int height = 1;
+	int c = 0;
+	r_list_foreach (row->items, iter, item) {
+		RTableColumn *col = r_list_get_n (t->cols, c);
+		if (col) {
+			RList *lines = cell_wrap (item, col->width);
+			if (!lines) {
+				r_list_free (line_cols);
+				return false;
+			}
+			height = R_MAX (height, r_list_length (lines));
+			r_list_append (line_cols, lines);
+		}
+		c++;
+	}
+	int i;
+	for (i = 0; i < height; i++) {
+		c = 0;
+		RList *lines;
+		r_list_foreach (line_cols, iter, lines) {
+			RTableColumn *col = r_list_get_n (t->cols, c);
+			if (col) {
+				const char *line = r_list_get_n (lines, i);
+				__strbuf_append_col_aligned_fancy (t, sb, col, line? line: "");
+			}
+			c++;
+		}
+		r_strbuf_appendf (sb, "%s\n", v_line);
+	}
+	r_list_free (line_cols);
+	return true;
 }
 
 static void __computeTotal(RTable *t) {
@@ -419,10 +528,9 @@ R_API char *r_table_tofancystring(RTable *t) {
 	RStrBuf *sb = r_strbuf_new ("");
 	RTableRow *row;
 	RTableColumn *col;
-	RCons *cons = (RCons *)t->cons;
-	RListIter *iter, *iter2;
-	bool useUtf8 = (cons && cons->use_utf8);
-	bool useUtf8Curvy = (cons && cons->use_utf8_curvy);
+	RListIter *iter;
+	bool useUtf8 = t->options.utf8;
+	bool useUtf8Curvy = t->options.utf8_curvy;
 	const char *v_line = useUtf8 || useUtf8Curvy ? RUNE_LINE_VERT : "|";
 	const char *h_line = useUtf8 || useUtf8Curvy ? RUNE_LINE_HORIZ : "-";
 	const char *l_intersect = useUtf8 || useUtf8Curvy ? RUNE_LINE_VERT : ")";
@@ -436,8 +544,7 @@ R_API char *r_table_tofancystring(RTable *t) {
 	r_list_foreach (t->cols, iter, col) {
 		__strbuf_append_col_aligned_fancy (t, sb, col, col->name);
 	}
-	int len = r_str_len_utf8_ansi (r_strbuf_get (sb)) - 1;
-	int maxlen = len;
+	int maxlen = r_str_len_utf8_ansi (r_strbuf_get (sb)) - 1;
 	char *h_line_str = r_str_repeat (h_line, maxlen);
 	{
 		char *s = r_str_newf ("%s%s%s\n", tl_corner, h_line_str, tr_corner);
@@ -447,17 +554,9 @@ R_API char *r_table_tofancystring(RTable *t) {
 
 	r_strbuf_appendf (sb, "%s\n%s%s%s\n", v_line, l_intersect, h_line_str, r_intersect);
 	r_list_foreach (t->rows, iter, row) {
-		char *item;
-		int c = 0;
-		r_list_foreach (row->items, iter2, item) {
-			RTableColumn *col = r_list_get_n (t->cols, c);
-			if (col) {
-				int l = __strbuf_append_col_aligned_fancy (t, sb, col, item);
-				len = R_MAX (len, l);
-			}
-			c++;
+		if (t->options.trim || !t->options.wrap || !wraprow (t, sb, row, v_line)) {
+			row_fancy (t, sb, row, v_line);
 		}
-		r_strbuf_appendf (sb, "%s\n", v_line);
 	}
 
 	if (SHOULD_SHOW_SUM (t)) {
@@ -466,8 +565,7 @@ R_API char *r_table_tofancystring(RTable *t) {
 		r_strbuf_appendf (sb, "%s%s%s\n", l_intersect, h_line_str, r_intersect);
 		r_list_foreach (t->cols, iter, col) {
 			char *num = col->total == -1 ? "" : sdb_itoa (col->total, 10, tmp, sizeof (tmp));
-			int l = __strbuf_append_col_aligned_fancy (t, sb, col, num);
-			len = R_MAX (len, l);
+			__strbuf_append_col_aligned_fancy (t, sb, col, num);
 		}
 		r_strbuf_appendf (sb, "%s\n", v_line);
 	}
@@ -476,7 +574,12 @@ R_API char *r_table_tofancystring(RTable *t) {
 	return r_strbuf_drain (sb);
 }
 
-static int __strbuf_append_col_aligned(RStrBuf *sb, RTableColumn *col, const char *str, bool nopad) {
+static int __strbuf_append_col_aligned(RTable *t, RStrBuf *sb, RTableColumn *col, const char *str, bool nopad) {
+	int trim_width = nopad? col->width: R_MAX (1, col->width - 1);
+	char *trimmed = r_table_trim_cell (t, str, trim_width);
+	if (trimmed) {
+		str = trimmed;
+	}
 	int ll = r_strbuf_length (sb);
 	if (nopad) {
 		r_strbuf_appendf (sb, "%s", str);
@@ -486,7 +589,7 @@ static int __strbuf_append_col_aligned(RStrBuf *sb, RTableColumn *col, const cha
 		int padlen = (len < col->width)? col->width - len: 0;
 		switch (col->align) {
 		case R_TABLE_ALIGN_LEFT:
-			pad = r_str_repeat (" ", col->width - len);
+			pad = r_str_repeat (" ", padlen);
 			r_strbuf_append (sb, str);
 			r_strbuf_append (sb, pad);
 			free (pad);
@@ -509,7 +612,9 @@ static int __strbuf_append_col_aligned(RStrBuf *sb, RTableColumn *col, const cha
 			}
 		}
 	}
-	return r_strbuf_length (sb) - ll;
+	int res = r_str_len_utf8_ansi (r_strbuf_get (sb) + ll);
+	free (trimmed);
+	return res;
 }
 
 R_API char *r_table_tostring(RTable *t) {
@@ -557,14 +662,15 @@ R_API char *r_table_tosimplestring(RTable *t) {
 	RTableRow *row;
 	RTableColumn *col;
 	RListIter *iter, *iter2;
-	RCons *cons = (RCons *) t->cons;
-	const char *h_line = (cons && (cons->use_utf8 || cons->use_utf8_curvy)) ? RUNE_LONG_LINE_HORIZ : "-";
+	const bool use_utf8 = t->options.utf8;
+	const bool use_utf8_curvy = t->options.utf8_curvy;
+	const char *h_line = (use_utf8 || use_utf8_curvy) ? RUNE_LONG_LINE_HORIZ : "-";
 	__table_adjust (t);
 	int maxlen = 0;
 	if (SHOULD_SHOW_HEADER (t)) {
 		r_list_foreach (t->cols, iter, col) {
 			bool nopad = !iter->n;
-			int ll = __strbuf_append_col_aligned (sb, col, col->name, nopad);
+			int ll = __strbuf_append_col_aligned (t, sb, col, col->name, nopad);
 			maxlen = R_MAX (maxlen, ll);
 		}
 		int len = r_str_len_utf8_ansi (r_strbuf_get (sb));
@@ -581,7 +687,7 @@ R_API char *r_table_tosimplestring(RTable *t) {
 			bool nopad = nopad_trailing (iter2);
 			RTableColumn *col = r_list_get_n (t->cols, c);
 			if (R_LIKELY (col)) {
-				(void)__strbuf_append_col_aligned (sb, col, item, nopad);
+				(void)__strbuf_append_col_aligned (t, sb, col, item, nopad);
 			}
 			c++;
 		}
@@ -600,7 +706,7 @@ R_API char *r_table_tosimplestring(RTable *t) {
 		r_list_foreach (t->cols, iter, col) {
 			bool nopad = !iter->n;
 			char *num = col->total == -1 ? "" : sdb_itoa (col->total, 10, tmp, sizeof (tmp));
-			(void)__strbuf_append_col_aligned (sb, col, num, nopad);
+			(void)__strbuf_append_col_aligned (t, sb, col, num, nopad);
 		}
 	}
 	return r_strbuf_drain (sb);
@@ -1125,7 +1231,7 @@ R_API void r_table_columns(RTable *t, RList *col_names) {
 		idx = 0;
 		RListIter *fit;
 		r_list_foreach (old_items, fit, item) {
-			if (!used_cols[idx]) {
+			if (idx >= old_col_count || !used_cols[idx]) {
 				free (item);
 			}
 			idx++;
@@ -1396,14 +1502,13 @@ typedef struct r_table_visual_state_t {
 } TableVisualState;
 
 static void r_table_visual_row(RTable *table, const RListInfo *info, int i, TableVisualState *state) {
-	RCons *cons = (RCons *) table->cons;
 	const ut64 min = state->min;
 	const ut64 mul = state->mul;
 	const ut64 seek = state->seek;
 	const int width = state->width;
 	const bool va = state->va;
-	const char *block = cons->use_utf8 ? R_UTF8_BLOCK : "#";
-	const char *h_line = cons->use_utf8 ? RUNE_LONG_LINE_HORIZ : "-";
+	const char *block = table->options.utf8 ? R_UTF8_BLOCK : "#";
+	const char *h_line = table->options.utf8 ? RUNE_LONG_LINE_HORIZ : "-";
 	RStrBuf *buf = r_strbuf_new ("");
 	int j;
 	for (j = 0; j < width; j++) {
@@ -1442,8 +1547,7 @@ static void r_table_visual_current_seek(RTable *table, TableVisualState *state) 
 	const ut64 min = state->min;
 	const ut64 seek = state->seek;
 	const ut64 len = state->len;
-	RCons *cons = (RCons *) table->cons;
-	const char *h_line = cons->use_utf8 ? RUNE_LONG_LINE_HORIZ : "-";
+	const char *h_line = table->options.utf8 ? RUNE_LONG_LINE_HORIZ : "-";
 	RStrBuf *buf = r_strbuf_new ("");
 	int j;
 	for (j = 0; j < width; j++) {
@@ -1567,7 +1671,7 @@ R_API void r_table_visual_vec(RTable *table, RVecListInfo* vec, ut64 seek, ut64 
 }
 
 R_API RTable *r_table_clone(const RTable *t) {
-	RTable *o = r_table_new (t->name);
+	RTable *o = r_table_new (t->name, &t->options);
 	RTableColumn *col;
 	RTableRow *row;
 	RListIter *iter;

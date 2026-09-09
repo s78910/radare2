@@ -16,20 +16,17 @@ CFLAGS+=-DR2_PLUGIN_INCORE -Iformat -Imangling
 include ${STATIC_BIN_PLUGINS}
 include ${STATIC_BIN_XTR_PLUGINS}
 include ${STATIC_BIN_LDR_PLUGINS}
+include ${STATIC_BIN_DEMANGLE_PLUGINS}
 include $(SHLR)/java/deps.mk
 include $(LIBR)/magic/deps.mk
 
-STATIC_OBJS=$(addprefix $(LTOP)/bin/p/, $(STATIC_OBJ))
-OBJS=bin.o addrline.o bin_ldr.o bin_write.o demangle.o
+STATIC_OBJS=$(sort $(addprefix $(LTOP)/bin/p/, $(STATIC_OBJ)))
+OBJS=bin.o addrline.o bin_ldr.o bin_write.o demangle.o demangle_stubs.o
 OBJS+=dwarf.o bfilter.o bfile.o bobj.o blang.o
-OBJS+=mangling/cxx/cp-demangle.o ${STATIC_OBJS}
-OBJS+=mangling/demangler.o
-OBJS+=mangling/microsoft.o
-OBJS+=mangling/objc.o mangling/cxx.o mangling/msvc.o
-OBJS+=mangling/swift.o mangling/swift-sd.o
 OBJS+=mangling/java.o
-OBJS+=mangling/pascal.o
-OBJS+=mangling/rust.o
+OBJS+=${STATIC_OBJS}
+OBJS+=mangling/swift.o
+OBJS+=format/swift/swift.o
 OBJS+=$(EXTERNAL_STATIC_OBJS)
 
 include $(TOP)/libr/bin/format/pdb/deps.mk

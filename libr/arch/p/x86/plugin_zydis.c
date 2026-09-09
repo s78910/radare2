@@ -11,6 +11,16 @@
 #include <Zydis.h>
 #endif
 
+/* Zydis 5 replaced mem.disp.has_displacement with mem.disp.size. ZYDIS_VERSION
+ * cannot be used here because 4.1.0 defines it as `(ZyanU64)0x...`, and that
+ * cast makes any `#if` comparison a preprocessor syntax error. Key off a macro
+ * that only 5.x defines instead (ZYDIS_ATTRIB_HAS_REX2 came with APX). */
+#if defined(ZYDIS_ATTRIB_HAS_REX2)
+#define HAS_MEM_DISP(op) ((op)->mem.disp.size != 0)
+#else
+#define HAS_MEM_DISP(op) ((op)->mem.disp.has_displacement)
+#endif
+
 #define ZYDIS_MAX_INSN_SIZE 16
 
 typedef struct plugin_data_t {
@@ -146,13 +156,13 @@ static bool is_mem_abs(const ZydisDecodedOperand *op) {
 	return op && op->type == ZYDIS_OPERAND_TYPE_MEMORY
 		&& op->mem.base == ZYDIS_REGISTER_NONE
 		&& op->mem.index == ZYDIS_REGISTER_NONE
-		&& op->mem.disp.has_displacement;
+		&& HAS_MEM_DISP (op);
 }
 
 static bool is_mem_riprel(const ZydisDecodedOperand *op) {
 	return op && op->type == ZYDIS_OPERAND_TYPE_MEMORY
 		&& (op->mem.base == ZYDIS_REGISTER_RIP || op->mem.base == ZYDIS_REGISTER_EIP)
-		&& op->mem.disp.has_displacement;
+		&& HAS_MEM_DISP (op);
 }
 
 static int cond_x86_zydis(ZydisMnemonic mnemonic) {
@@ -316,7 +326,7 @@ static void set_mem_ref(RAnalOp *op, const ZydisDecodedInstruction *insn, const 
 		op->ptr = op->addr + insn->length + mop->mem.disp.value;
 	} else if (is_mem_abs (mop)) {
 		op->ptr = mop->mem.disp.value;
-	} else if (mop->mem.disp.has_displacement) {
+	} else if (HAS_MEM_DISP (mop)) {
 		op->disp = mop->mem.disp.value;
 	}
 	if (mop->mem.base != ZYDIS_REGISTER_NONE) {
@@ -497,7 +507,7 @@ static char *memaddr_esil(const ZydisDecodedInstruction *insn, const ZydisDecode
 		append_esil_mem_component (sb, &count, index, false);
 		free (index);
 	}
-	if (op->mem.disp.has_displacement && op->mem.disp.value) {
+	if (HAS_MEM_DISP (op) && op->mem.disp.value) {
 		const st64 disp = op->mem.disp.value;
 		char *d = r_str_newf ("0x%"PFMT64x, (ut64)R_ABS (disp));
 		append_esil_mem_component (sb, &count, d, disp < 0);
@@ -1128,7 +1138,7 @@ static void set_op_type(RArchSession *as, RAnalOp *op, const ZydisDecodedInstruc
 				&& is_sp_reg (op0->reg.value)
 				&& is_sp_reg (op1->mem.base)
 				&& op1->mem.index == ZYDIS_REGISTER_NONE
-				&& op1->mem.disp.has_displacement) {
+				&& HAS_MEM_DISP (op1)) {
 			op->stackop = R_ANAL_STACK_INC;
 			op->stackptr = op1->mem.disp.value;
 		}
@@ -2118,7 +2128,7 @@ static void anop_esil(RArchSession *as, RAnalOp *op, const ZydisDecodedInstructi
 			const ut64 retaddr = op->addr + op->size;
 			ut8 thunk[4] = {0};
 			RBin *bin = as->arch->binb.bin;
-			if (bin && bin->iob.read_at && bin->iob.read_at (bin->iob.io, target, thunk, sizeof (thunk))) {
+			if (bin && bin->iob.read_at && bin->iob.read_at (bin->iob.io, target, thunk, sizeof (thunk)) == sizeof (thunk)) {
 				if (thunk[0] == 0x8b && thunk[3] == 0xc3
 						&& (thunk[1] & 0xc7) == 4
 						&& (thunk[2] & 0x3f) == 0x24) {
@@ -2127,7 +2137,7 @@ static void anop_esil(RArchSession *as, RAnalOp *op, const ZydisDecodedInstructi
 					break;
 				}
 			}
-			if (target == retaddr && bin && bin->iob.read_at && bin->iob.read_at (bin->iob.io, retaddr, thunk, 1)) {
+			if (target == retaddr && bin && bin->iob.read_at && bin->iob.read_at (bin->iob.io, retaddr, thunk, 1) == 1) {
 				if (thunk[0] >= 0x58 && thunk[0] <= 0x5f) {
 					esilprintf (op, "0x%"PFMT64x",%s,=", retaddr, reg32_to_name (thunk[0] - 0x58));
 					break;
@@ -2445,21 +2455,21 @@ static bool tls_end(REsil *esil) {
 	return true;
 }
 
-static bool esilcb(RArchSession *as, RArchEsilAction action) {
-	RBin *bin = as->arch->binb.bin;
-	if (!bin) {
-		return false;
-	}
-	RIO *io = bin->iob.io;
-	RCore *core = io->coreb.core;
-	RAnal *anal = core->anal;
-	REsil *esil = anal->esil;
+static bool esilcb(RArchSession *as R_UNUSED, REsil *esil, RArchEsilAction action) {
 	if (!esil) {
 		R_LOG_ERROR ("Failed to find an esil instance");
 		return false;
 	}
-	r_esil_set_op (esil, "TLS_BEGIN", tls_begin, 0, 0, R_ESIL_OP_TYPE_CUSTOM, NULL);
-	r_esil_set_op (esil, "TLS_END", tls_end, 0, 0, R_ESIL_OP_TYPE_CUSTOM, NULL);
+	switch (action) {
+	case R_ARCH_ESIL_ACTION_INIT:
+		r_esil_set_op (esil, "TLS_BEGIN", tls_begin, 0, 0, R_ESIL_OP_TYPE_CUSTOM, NULL);
+		r_esil_set_op (esil, "TLS_END", tls_end, 0, 0, R_ESIL_OP_TYPE_CUSTOM, NULL);
+		break;
+	case R_ARCH_ESIL_ACTION_FINI:
+		break;
+	default:
+		return false;
+	}
 	return true;
 }
 

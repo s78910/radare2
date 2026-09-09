@@ -6,7 +6,7 @@
 #include <r_lib.h>
 #include <r_cons.h>
 
-#if __linux__
+#if __linux__ && !R2_UEFI
 
 #include <sys/ptrace.h>
 #include <sys/types.h>
@@ -90,7 +90,7 @@ static RIODesc *__open(RIO *io, const char *file, int rw, int mode) {
 			riop->pid = pid;
 			riop->fd = fd;
 			RIODesc *d = r_io_desc_new (io, &r_io_plugin_procpid, file, true, 0, riop);
-			d->name = r_sys_pid_to_path (riop->pid);
+			d->name = r_sys_pidpath (riop->pid);
 			return d;
 		}
 		/* kill children */

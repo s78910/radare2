@@ -258,6 +258,27 @@ nth vaddr      bind type lib          name
 EOF
 RUN
 
+NAME=pe32 stdcall import ucall stack pop vars
+FILE=bins/pe/imports_1210.exe
+CMDS=<<EOF
+e scr.color=0
+e bin.cache=true
+e io.cache=true
+e asm.arch=x86
+e anal.arch=x86
+e asm.bits=32
+wx 6a046a036a026a01ff15e42141008b442404c3 @ 0x40f000
+af+ 0x40f000 pe_import_pop
+afb+ 0x40f000 0x40f000 0x13
+s 0x40f000
+afva
+afvs~arg_4h
+EOF
+EXPECT=<<EOF
+arg int32_t arg_4h @ esp+0x14
+EOF
+RUN
+
 NAME=pe32 imported relocations (ir)
 FILE=bins/pe/imports_1210.exe
 CMDS=ir
@@ -414,6 +435,13 @@ FILE=bins/pe/unaligned_sec_paddr.exe
 CMDS=iS~sect_0
 EXPECT=<<EOF
 0   0x00000200  0x205 0x00401000  0x1000 -rwx 0xa0000000 ---- sect_0
+EOF
+RUN
+
+NAME=PE: reject fuzzed PL without PE optional header
+FILE=bins/fuzzed/minified_crash
+CMDS=aaa;afl~entry0
+EXPECT=<<EOF
 EOF
 RUN
 

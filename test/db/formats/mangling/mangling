@@ -13,15 +13,28 @@ iD list
 EOF
 EXPECT=<<EOF
 c++
-dart
 dlang
-groovy
+ibmxl
 java
 msvc
 objc
 pascal
 rust
 swift
+EOF
+RUN
+
+NAME=java JVM and JNI descriptors
+FILE=-
+CMDS=<<EOF
+!rabin2 -D java 'nativeGreater(J[J[JJ)V'
+!rabin2 -D java 'nLoadSO(ZILjava/lang/String;)Z'
+!rabin2 -D java 'arrays([[I[[Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Class;'
+EOF
+EXPECT=<<EOF
+void nativeGreater (long, long[], long[], long)
+boolean nLoadSO (boolean, int, java.lang.String)
+java.lang.Class arrays (int[][], java.lang.String[][], java.lang.Object[])
 EOF
 RUN
 
@@ -32,6 +45,92 @@ CMDS=<<EOF
 EOF
 EXPECT=<<EOF
 unit example sumofsquares(longint)longint
+EOF
+RUN
+
+NAME=ibm xl cxx global functions
+FILE=-
+CMDS=<<EOF
+!rabin2 -D ibmxl foo__Fv
+!rabin2 -D ibmxl foo__Fi
+!rabin2 -D ibmxl foo__FPCc
+EOF
+EXPECT=<<EOF
+foo()
+foo(int)
+foo(const char *)
+EOF
+RUN
+
+NAME=ibm xl cxx member functions
+FILE=-
+CMDS=<<EOF
+!rabin2 -D ibmxl bar__3Fooi
+!rabin2 -D ibmxl f__1XFi
+!rabin2 -D ibmxl getAverage__7AverageFv
+EOF
+EXPECT=<<EOF
+Foo::bar(int)
+X::f(int)
+Average::getAverage()
+EOF
+RUN
+
+NAME=ibm xl rejects encoded non-symbol names
+FILE=-
+CMDS=!rabin2 -D ibmxl findBasename_28_char_20_const_2a__29_
+EXPECT=<<EOF
+findBasename_28_char_20_const_2a__29_
+EOF
+RUN
+
+NAME=ibm xl cxx constructors operators and templates
+FILE=-
+CMDS=<<EOF
+!rabin2 -D ibmxl __ct__3FooFv
+!rabin2 -D ibmxl __dt__3FooFv
+!rabin2 -D ibmxl __pl__F8IteratorXTi_l
+!rabin2 -D ibmxl f__1AXTi_Fv
+EOF
+EXPECT=<<EOF
+Foo::Foo()
+Foo::~Foo()
+operator+(Iterator<int>, long)
+A<int>::f()
+EOF
+RUN
+
+NAME=ibm xl cxx repeated parameters and qualified classes
+FILE=-
+CMDS=<<EOF
+!rabin2 -D ibmxl foo__FiT1
+!rabin2 -D ibmxl foo__FPPiPCPi
+!rabin2 -D ibmxl Q2_1X1Y
+!rabin2 -D cxx foo__Fv
+EOF
+EXPECT=<<EOF
+foo(int, int)
+foo(int **, int * const *)
+X::Y
+foo()
+EOF
+RUN
+
+NAME=arm cfront cxx templates via cxx chain
+FILE=-
+CMDS=<<EOF
+!rabin2 -D cxx X__12T5__pt__3_1x
+!rabin2 -D cxx __dt__11T5__pt__2_iFv
+!rabin2 -D cxx __dt__11T5__pt__2_cFv
+!rabin2 -D cxx __ct__21T5__pt__11_PFiPPdPv_iFi
+!rabin2 -D cxx __dt__17T5__pt__8_PFcPv_iFv
+EOF
+EXPECT=<<EOF
+T5<x>::X
+T5<int>::~T5(void)
+T5<char>::~T5(void)
+T5<int (*)(int, double **, void *)>::T5(int)
+T5<int (*)(char, void *)>::~T5(void)
 EOF
 RUN
 
@@ -3730,5 +3829,37 @@ FILE=-
 CMDS="iD msvc ??_G?$impl@V?$binder2@V?$io_op@V?$basic_stream_socket@Vtcp@ip@asio@boost@@V?$any_executor@U?$context_as_t@AEAVexecution_context@asio@boost@@@execution@asio@boost@@U?$never_t@$0A@@blocking@detail@234@U?$prefer_only@U?$possibly_t@$0A@@blocking@detail@execution@asio@boost@@@234@U?$prefer_only@U?$tracked_t@$0A@@outstanding_work@detail@execution@asio@boost@@@234@U?$prefer_only@U?$untracked_t@$0A@@outstanding_work@detail@execution@asio@boost@@@234@U?$prefer_only@U?$fork_t@$0A@@relationship@detail@execution@asio@boost@@@234@U?$prefer_only@U?$continuation_t@$0A@@relationship@detail@execution@asio@boost@@@234@@execution@34@@asio@boost@@V?$read_op@Vmutable_buffers_1@asio@boost@@@detail@ssl@23@V?$read_op@V?$stream@V?$basic_stream_socket@Vtcp@ip@asio@boost@@V?$any_executor@U?$context_as_t@AEAVexecution_context@asio@boost@@@execution@asio@boost@@U?$never_t@$0A@@blocking@detail@234@U?$prefer_only@U?$possibly_t@$0A@@blocking@detail@execution@asio@boost@@@234@U?$prefer_only@U?$tracked_t@$0A@@outstanding_work@detail@execution@asio@boost@@@234@U?$prefer_only@U?$untracked_t@$0A@@outstanding_work@detail@execution@asio@boost@@@234@U?$prefer_only@U?$fork_t@$0A@@relationship@detail@execution@asio@boost@@@234@U?$prefer_only@U?$continuation_t@$0A@@relationship@detail@execution@asio@boost@@@234@@execution@34@@asio@boost@@@ssl@asio@boost@@Vmutable_buffers_1@34@PEBVmutable_buffer@34@Vtransfer_at_least_t@detail@34@V?$wrapped_handler@Vstrand@io_context@asio@boost@@V?$custom_alloc_handler@V?$_Binder@U_Unforced@std@@P8?$connection@Utransport_config@asio_tls@config@websocketpp@@@asio@transport@websocketpp@@EAAXV?$function@$$A6AXAEBVerror_code@std@@_K@Z@2@AEBVerror_code@system@boost@@_K@ZV?$shared_ptr@V?$connection@Utransport_config@asio_tls@config@websocketpp@@@asio@transport@websocketpp@@@2@AEAV72@AEBU?$_Ph@$00@2@AEBU?$_Ph@$01@2@@std@@@3transport@websocketpp@@Uis_continuation_if_running@detail@34@@834@@523@@detail@ssl@asio@boost@@Verror_code@system@5@_K@detail@asio@boost@@V?$allocator@X@std@@@executor_function@detail@asio@boost@@QEAAPEAXI@Z"
 EXPECT=<<EOF
 public: void * __ptr64 __cdecl boost::asio::detail::executor_function::impl<class boost::asio::detail::binder2<class boost::asio::ssl::detail::io_op<class boost::asio::basic_stream_socket<class boost::asio::ip::tcp, class boost::asio::execution::any_executor<struct boost::asio::execution::context_as_t<class boost::asio::execution_context & __ptr64>, struct boost::asio::execution::detail::blocking::never_t<0>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::blocking::possibly_t<0>>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::outstanding_work::tracked_t<0>>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::outstanding_work::untracked_t<0>>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::relationship::fork_t<0>>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::relationship::continuation_t<0>>>>, class boost::asio::ssl::detail::read_op<class boost::asio::mutable_buffers_1>, class boost::asio::detail::read_op<class boost::asio::ssl::stream<class boost::asio::basic_stream_socket<class boost::asio::ip::tcp, class boost::asio::execution::any_executor<struct boost::asio::execution::context_as_t<class boost::asio::execution_context & __ptr64>, struct boost::asio::execution::detail::blocking::never_t<0>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::blocking::possibly_t<0>>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::outstanding_work::tracked_t<0>>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::outstanding_work::untracked_t<0>>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::relationship::fork_t<0>>, struct boost::asio::execution::prefer_only<struct boost::asio::execution::detail::relationship::continuation_t<0>>>>>, class boost::asio::mutable_buffers_1, class boost::asio::mutable_buffer const * __ptr64, class boost::asio::detail::transfer_at_least_t, class boost::asio::detail::wrapped_handler<class boost::asio::io_context::strand, class websocketpp::transport::asio::custom_alloc_handler<class std::_Binder<struct std::_Unforced, void & (__thiscall websocketpp::transport::asio::connection<struct websocketpp::config::asio_tls::transport_config>::*)(class std::function<void (__cdecl *)(class std::error_code const & __ptr64, unsigned long long(unsigned __int64))>, class boost::system::error_code const & __ptr64, unsigned long long(unsigned __int64)), class std::shared_ptr<class websocketpp::transport::asio::connection<struct websocketpp::config::asio_tls::transport_config>>, class std::function<void (__cdecl *)(class std::error_code const & __ptr64, unsigned long long(unsigned __int64))> & __ptr64, struct std::_Ph<1> const & __ptr64, struct std::_Ph<2> const & __ptr64>>, struct boost::asio::detail::is_continuation_if_running>>>, class boost::system::error_code, unsigned long long(unsigned __int64)>, class std::allocator<void>>::scalar_dtor(unsigned int) __ptr64
+EOF
+RUN
+
+NAME=msvc single letter variable name
+FILE=-
+CMDS="!rabin2 -D msvc ?a@@3HA"
+EXPECT=<<EOF
+int a
+EOF
+RUN
+
+NAME=msvc single letter names in a namespace
+FILE=-
+CMDS="!rabin2 -D msvc ?a@b@cd@@3HA"
+EXPECT=<<EOF
+int cd::b::a
+EOF
+RUN
+
+NAME=msvc single letter function taking nullptr_t
+FILE=-
+CMDS="!rabin2 -D msvc ?f@@YAX\$\$T@Z"
+EXPECT=<<EOF
+void __cdecl f(std::nullptr_t)
+EOF
+RUN
+
+NAME=msvc single letter class constructor
+FILE=-
+CMDS="!rabin2 -D msvc ??0a@@QEAA@XZ"
+EXPECT=<<EOF
+public: void __cdecl a::constructor(void) __ptr64
 EOF
 RUN

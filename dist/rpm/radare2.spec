@@ -4,7 +4,8 @@
 %global         shortcommit     %(c=%{commit}; echo ${c:0:7})
 
 Name:           radare2
-Version:        6.1.4
+# This version must be a valid and existing release number otherwise CI will fail
+Version:        6.2.2
 Release:        1%{?dist}
 Summary:        The %{name} reverse engineering framework
 Group:          Applications/Engineering
@@ -104,6 +105,9 @@ NOSUDO=1 make install DESTDIR=%{buildroot} LIBDIR=%{_libdir} PREFIX=%{_prefix}
 
 
 %changelog
+* Tue Jun 03 2026 pancake <pancake@nopcode.org> 6.1.6
+- lots of bug fixes and memory leaks
+
 * Tue Jan 10 2023 pancake <pancake@nopcode.org> 6.0.7
 - lots of bug fixes and memory leaks
 

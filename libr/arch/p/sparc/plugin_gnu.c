@@ -49,7 +49,7 @@ static bool disassemble(RArchSession *a, RAnalOp *op, ut8 *bytes, RArchDecodeMas
 	disasm_obj.symbol_at_address_func = &symbol_at_address;
 	disasm_obj.memory_error_func = &memory_error_func;
 	disasm_obj.print_address_func = &generic_print_address_func;
-	disasm_obj.endian = a->config->big_endian;
+	disasm_obj.endian = R_ARCH_CONFIG_IS_BIG_ENDIAN (a->config) ? BFD_ENDIAN_BIG : BFD_ENDIAN_LITTLE;
 	disasm_obj.fprintf_func = &generic_fprintf_func;
 	disasm_obj.stream = sb;
 	disasm_obj.mach = ((a->config->bits == 64)
@@ -456,7 +456,7 @@ static bool decode(RArchSession *as, RAnalOp *op, RArchDecodeMask mask) {
 
 	ut32 insn = r_read_ble32 (op->bytes, R_ARCH_CONFIG_IS_BIG_ENDIAN (as->config));
 	if (mask & R_ARCH_OP_MASK_DISASM) {
-		disassemble (as, op, (ut8*)&insn, mask);
+		disassemble (as, op, op->bytes, mask);
 	}
 
 	if (X_OP (insn) == OP_0) {

@@ -188,7 +188,7 @@ static RList *filter_kexts(RKernelCacheObj *obj, RBinFile *bf);
 static RList *carve_kexts(RKernelCacheObj *obj, RBinFile *bf);
 static RList *kexts_from_load_commands(RKernelCacheObj *obj, RBinFile *bf);
 
-static void sections_from_mach0(RList *ret, struct MACH0_(obj_t) * mach0, RBinFile *bf, ut64 paddr, char *prefix, RKernelCacheObj *obj);
+static bool sections_from_mach0(struct MACH0_(obj_t) *mach0, RBinFile *bf, ut64 paddr, char *prefix, RKernelCacheObj *obj);
 static void handle_data_sections(RBinSection *sect);
 static RList *resolve_syscalls(RKernelCacheObj *obj, ut64 enosys_addr);
 static RList *resolve_mig_subsystem(RKernelCacheObj *obj);
@@ -1033,7 +1033,7 @@ static void create_initterm_syms_vec(RVecRBinSymbol *symbols, RBinFile *bf, RKex
 			r_str_newf ("%s.%s.%d", kext_short_name (kext), (type == R_BIN_ENTRY_TYPE_INIT)? "init": "fini", count++));
 		sym->vaddr = func_vaddr;
 		sym->paddr = func_vaddr - kext->pa2va_exec;
-		sym->size = 0;
+		sym->attr.size = 0;
 		sym->forwarder = "NONE";
 		sym->bind = "GLOBAL";
 		sym->type = "FUNC";
@@ -1088,7 +1088,7 @@ static void process_constructors(RKernelCacheObj *obj, struct MACH0_(obj_t) * ma
 					r_str_newf ("%s.%s.%d", prefix, (type == R_BIN_ENTRY_TYPE_INIT)? "init": "fini", count++));
 				sym->vaddr = addr64;
 				sym->paddr = paddr64;
-				sym->size = 0;
+				sym->attr.size = 0;
 				sym->forwarder = "NONE";
 				sym->bind = "GLOBAL";
 				sym->type = "FUNC";
@@ -1145,7 +1145,7 @@ static void process_constructors_vec(RVecRBinSymbol *symbols, RBinFile *bf, RKer
 					r_str_newf ("%s.%s.%d", prefix, (type == R_BIN_ENTRY_TYPE_INIT)? "init": "fini", count++));
 				sym.vaddr = addr64;
 				sym.paddr = paddr64;
-				sym.size = 0;
+				sym.attr.size = 0;
 				sym.forwarder = "NONE";
 				sym.bind = "GLOBAL";
 				sym.type = "FUNC";
@@ -1164,6 +1164,9 @@ static void bin_symbol_copy(RBinSymbol *dst, const RBinSymbol *src) {
 	}
 	if (src->classname) {
 		dst->classname = strdup (src->classname);
+	}
+	if (src->attr.ns) {
+		dst->attr.ns = strdup (src->attr.ns);
 	}
 }
 
@@ -1203,13 +1206,13 @@ static int prot2perm(int x) {
 	return r;
 }
 
-static RList *sections(RBinFile *bf) {
-	RList *ret = NULL;
+static bool sections_vec(RBinFile *bf) {
 	RBinObject *obj = bf? bf->bo: NULL;
 
-	if (!obj || !obj->bin_obj || ! (ret = r_list_newf ((RListFree)free))) {
-		return NULL;
+	if (!obj || !obj->bin_obj) {
+		return false;
 	}
+	RVecRBinSection_clear (&obj->sections_vec);
 
 	RKernelCacheObj *kobj = (RKernelCacheObj *)obj->bin_obj;
 	ensure_kexts_initialized (kobj, bf);
@@ -1222,7 +1225,10 @@ static RList *sections(RBinFile *bf) {
 		int magic = r_read_le32 (magicbytes);
 		switch (magic) {
 		case MH_MAGIC_64:
-			sections_from_mach0 (ret, kext->mach0, bf, kext->range.offset, kext->name, kobj);
+			if (!sections_from_mach0 (kext->mach0, bf, kext->range.offset, kext->name, kobj)) {
+				r_unref (cache_buf);
+				return false;
+			}
 			break;
 		default:
 			R_LOG_ERROR ("Unknown sub-bin");
@@ -1230,14 +1236,17 @@ static RList *sections(RBinFile *bf) {
 		}
 	}
 
-	sections_from_mach0 (ret, kobj->mach0, bf, 0, NULL, kobj);
+	if (!sections_from_mach0 (kobj->mach0, bf, 0, NULL, kobj)) {
+		r_unref (cache_buf);
+		return false;
+	}
 
 	struct MACH0_(segment_command) * seg;
 	int nsegs = R_MIN (kobj->mach0->nsegs, 128);
 	int i;
 	for (i = 0; i < nsegs; i++) {
 		char segname[17];
-		RBinSection *ptr = R_NEW0 (RBinSection);
+		RBinSection *ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 		seg = &kobj->mach0->segs[i];
 		r_str_ncpy (segname, seg->segname, 17);
 		r_str_filter (segname, -1);
@@ -1252,17 +1261,16 @@ static RList *sections(RBinFile *bf) {
 			ptr->vaddr = ptr->paddr;
 		}
 		ptr->perm = prot2perm (seg->initprot);
-		r_list_append (ret, ptr);
 	}
 
 	r_unref (cache_buf);
-	return ret;
+	return true;
 }
 
-static void sections_from_mach0(RList *ret, struct MACH0_(obj_t) * mach0, RBinFile *bf, ut64 paddr, char *prefix, RKernelCacheObj *obj) {
+static bool sections_from_mach0(struct MACH0_(obj_t) *mach0, RBinFile *bf, ut64 paddr, char *prefix, RKernelCacheObj *obj) {
 	const RVecSection *sections = MACH0_(load_sections) (mach0);
 	if (!sections) {
-		return;
+		return false;
 	}
 
 	struct section_t *section;
@@ -1274,7 +1282,7 @@ static void sections_from_mach0(RList *ret, struct MACH0_(obj_t) * mach0, RBinFi
 		}
 	}
 	R_VEC_FOREACH (sections, section) {
-		RBinSection *ptr = R_NEW0 (RBinSection);
+		RBinSection *ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 		if (prefix) {
 			ptr->name = r_str_newf ("%s.%s", prefix, (char *)section->name);
 		} else {
@@ -1299,8 +1307,8 @@ static void sections_from_mach0(RList *ret, struct MACH0_(obj_t) * mach0, RBinFi
 		if (!ptr->perm && strstr (section->name, "__TEXT_EXEC.__text")) {
 			ptr->perm = 1 | 4;
 		}
-		r_list_append (ret, ptr);
 	}
+	return true;
 }
 
 static void handle_data_sections(RBinSection *sect) {
@@ -1449,7 +1457,7 @@ static RList *classes(RBinFile *bf) {
 		r_list_foreach (kext->classes, iter, c) {
 			RIOKitClass *parent = ht_up_find (obj->class_by_handle, c->supermeta_va, NULL);
 			RBinClass *klass = r_bin_class_new (c->name, parent? parent->name: "", R_BIN_ATTR_PUBLIC);
-			klass->instance_size = c->size;
+			klass->attr.size = c->size;
 			klass->addr = c->meta_va;
 			klass->origin = R_BIN_CLASS_ORIGIN_BIN;
 			r_list_append (list, klass);
@@ -1529,21 +1537,20 @@ static RList *resolve_syscalls(RKernelCacheObj *obj, ut64 enosys_addr) {
 		offset += 40;
 		array_offset += 24;
 	}
-	while (cursor < end) {
-		ut64 test = r_read_le64 (cursor);
-		if (test == pattern) {
+	while (cursor + sizeof (ut64) <= end) {
+		if (r_read_le64 (cursor) == pattern) {
 			break;
 		}
 		cursor += 8;
 	}
 
-	if (cursor >= end) {
+	if (cursor + sizeof (ut64) > end || cursor < data_const + offset) {
 		goto beach;
 	}
 
 	cursor -= offset;
 	if (enosys_addr) {
-		while (cursor >= data_const) {
+		while (cursor + sizeof (RSysEnt) <= end) {
 			ut64 addr = r_read_le64 (cursor);
 			ut64 x = r_read_le64 (cursor + 8);
 			ut64 y = r_read_le64 (cursor + 16);
@@ -1551,17 +1558,16 @@ static RList *resolve_syscalls(RKernelCacheObj *obj, ut64 enosys_addr) {
 			if (IS_KERNEL_ADDR (K_PPTR (addr)) &&
 				(x == 0 || IS_KERNEL_ADDR (K_PPTR (x))) &&
 				(y != 0 && !IS_KERNEL_ADDR (K_PPTR (y)))) {
-				cursor -= 24;
+				if (cursor < data_const + sizeof (RSysEnt)) {
+					goto beach;
+				}
+				cursor -= sizeof (RSysEnt);
 				continue;
 			}
 
-			cursor += 24;
+			cursor += sizeof (RSysEnt);
 			break;
 		}
-	}
-
-	if (cursor < data_const) {
-		goto beach;
 	}
 
 	syscalls = r_list_newf (r_bin_symbol_free);
@@ -1585,16 +1591,19 @@ static RList *resolve_syscalls(RKernelCacheObj *obj, ut64 enosys_addr) {
 	sym->name = r_bin_name_new ("sysent");
 	sym->vaddr = sysent_vaddr;
 	sym->paddr = cursor - data_const + data_const_offset;
-	sym->size = 0;
+	sym->attr.size = 0;
 	sym->forwarder = "NONE";
 	sym->bind = "GLOBAL";
 	sym->type = "OBJECT";
 	r_list_append (syscalls, sym);
 
 	int i = 1;
+	if (cursor + array_offset > end) {
+		goto beach;
+	}
 	cursor += array_offset;
 	int num_syscalls = sdb_count (syscall->db);
-	while (cursor < end && i < num_syscalls) {
+	while (cursor + sizeof (RSysEnt) <= end && i < num_syscalls) {
 		ut64 addr = K_PPTR (r_read_le64 (cursor));
 		RSyscallItem *item = r_syscall_get (syscall, i, 0x80);
 		if (item && item->name) {
@@ -1602,14 +1611,14 @@ static RList *resolve_syscalls(RKernelCacheObj *obj, ut64 enosys_addr) {
 			sym->name = r_bin_name_new_from (r_str_newf ("syscall.%d.%s", i, item->name));
 			sym->vaddr = addr;
 			sym->paddr = addr;
-			sym->size = 0;
+			sym->attr.size = 0;
 			sym->forwarder = "NONE";
 			sym->bind = "GLOBAL";
 			sym->type = "FUNC";
 			r_list_append (syscalls, sym);
 		}
 		r_syscall_item_free (item);
-		cursor += 24;
+		cursor += sizeof (RSysEnt);
 		i++;
 	}
 
@@ -1768,7 +1777,7 @@ static RList *resolve_mig_subsystem(RKernelCacheObj *obj) {
 
 				sym->vaddr = routine_p;
 				sym->paddr = sym->vaddr - text_exec_vaddr + text_exec_offset;
-				sym->size = 0;
+				sym->attr.size = 0;
 				sym->forwarder = "NONE";
 				sym->bind = "GLOBAL";
 				sym->type = "OBJECT";
@@ -1845,10 +1854,11 @@ static void symbols_from_stubs_vec(RVecRBinSymbol *symbols, RBinFile *bf, HtPP *
 
 		while (!found && level-- > 0) {
 			ut64 offset_in_got = addr_in_got - obj->pa2va_exec;
-			ut64 addr;
-			if (r_buf_read_at (cache_buf, offset_in_got, (ut8 *)&addr, 8) < 8) {
+			ut8 buf[sizeof (ut64)];
+			if (r_buf_read_at (cache_buf, offset_in_got, buf, sizeof (buf)) < sizeof (buf)) {
 				break;
 			}
+			ut64 addr = r_read_le64 (buf);
 
 			if (level == 2) {
 				target_addr = addr;
@@ -1863,7 +1873,7 @@ static void symbols_from_stubs_vec(RVecRBinSymbol *symbols, RBinFile *bf, HtPP *
 				sym->name = r_bin_name_new_from (r_str_newf ("stub.%s", name));
 				sym->vaddr = vaddr;
 				sym->paddr = stubs_cursor;
-				sym->size = 12;
+				sym->attr.size = 12;
 				sym->forwarder = "NONE";
 				sym->bind = "LOCAL";
 				sym->type = "FUNC";
@@ -1890,7 +1900,7 @@ static void symbols_from_stubs_vec(RVecRBinSymbol *symbols, RBinFile *bf, HtPP *
 			r_str_newf ("exp.%s.0x%" PFMT64x, kext_short_name (remote_kext), target_addr));
 		remote_sym->vaddr = target_addr;
 		remote_sym->paddr = target_addr - obj->pa2va_exec;
-		remote_sym->size = 0;
+		remote_sym->attr.size = 0;
 		remote_sym->forwarder = "NONE";
 		remote_sym->bind = "GLOBAL";
 		remote_sym->type = "FUNC";
@@ -1901,7 +1911,7 @@ static void symbols_from_stubs_vec(RVecRBinSymbol *symbols, RBinFile *bf, HtPP *
 		local_sym->name = r_bin_name_new_from (r_str_newf ("stub.%s.0x%" PFMT64x, kext_short_name (remote_kext), target_addr));
 		local_sym->vaddr = vaddr;
 		local_sym->paddr = stubs_cursor;
-		local_sym->size = 12;
+		local_sym->attr.size = 12;
 		local_sym->forwarder = "NONE";
 		local_sym->bind = "GLOBAL";
 		local_sym->type = "FUNC";
@@ -1960,7 +1970,7 @@ static RList *resolve_iokit_classes(RVecRBinSymbol *symbols, ut64 start_offset, 
 		sym->name = r_bin_name_new_from (r_str_newf ("%s::gMetaClass", c->name));
 		sym->vaddr = c->meta_va;
 		sym->paddr = c->meta_va - kext->pa2va_exec;
-		sym->size = 8;
+		sym->attr.size = 8;
 		sym->forwarder = "NONE";
 		sym->bind = "GLOBAL";
 		sym->type = "OBJECT";
@@ -1976,7 +1986,7 @@ static RList *resolve_iokit_classes(RVecRBinSymbol *symbols, ut64 start_offset, 
 			{
 				/* avoid overflow-before-widen: promote before multiply */
 				ut64 slots = (ut64) (c->vt.instance.slots_total? c->vt.instance.slots_total: 1U);
-				vsym->size = slots * 8ULL;
+				vsym->attr.size = slots * 8ULL;
 			}
 			vsym->forwarder = "NONE";
 			vsym->bind = "GLOBAL";
@@ -1994,7 +2004,7 @@ static RList *resolve_iokit_classes(RVecRBinSymbol *symbols, ut64 start_offset, 
 			{
 				/* avoid overflow-before-widen: promote before multiply */
 				ut64 slots = (ut64) (c->vt.metaclass.slots_total? c->vt.metaclass.slots_total: 1U);
-				msym->size = slots * 8ULL;
+				msym->attr.size = slots * 8ULL;
 			}
 			msym->forwarder = "NONE";
 			msym->bind = "GLOBAL";
@@ -3116,7 +3126,7 @@ RBinPlugin r_bin_plugin_xnu_kernelcache = {
 	.entries = &entries,
 	.baddr = &baddr,
 	.symbols_vec = &symbols_vec,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.classes = &classes,
 	.check = &check,
 	.info = &info

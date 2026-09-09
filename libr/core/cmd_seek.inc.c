@@ -1,6 +1,7 @@
 /* radare - LGPL - Copyright 2009-2026 - pancake */
 
 #if R_INCLUDE_BEGIN
+static void __clean_lines_cache(RCore *core);
 
 static void __core_cmd_search_backward_prelude(RCore *core, bool doseek, bool forward);
 
@@ -113,7 +114,13 @@ static void __init_seek_line(RCore *core) {
 	r_config_bump (core->config, "lines.to");
 	const ut64 from = r_config_get_i (core->config, "lines.from");
 	const char *to_str = r_config_get (core->config, "lines.to");
-	const ut64 to = r_num_math (core->num, (to_str && *to_str) ? to_str : "$s");
+	const char *err = NULL;
+	const ut64 to = r_num_math_err (core->num, (to_str && *to_str) ? to_str : "$s", &err);
+	if (err) {
+		R_LOG_ERROR ("Invalid lines.to value '%s' (%s)", to_str, err);
+		__clean_lines_cache (core);
+		return;
+	}
 	if (r_core_lines_initcache (core, from, to) == -1) {
 		R_LOG_ERROR ("lines.from and lines.to are not defined");
 	}
@@ -182,26 +189,24 @@ R_API int r_core_lines_currline(RCore *core) {  // make priv8 again
 R_API int r_core_lines_initcache(RCore *core, ut64 start_addr, ut64 end_addr) {
 	int i, bsz = core->blocksize;
 	ut64 off = start_addr;
-	if (start_addr == UT64_MAX || end_addr == UT64_MAX) {
+	__clean_lines_cache (core);
+	if (start_addr == UT64_MAX || end_addr == UT64_MAX || bsz < 1) {
 		return -1;
 	}
 
 	int cache_sz = bsz;
 	ut64 *lines_cache = R_NEWS0 (ut64, cache_sz);
 	if (!lines_cache) {
-		free (core->print->lines_cache);
-		core->print->lines_cache = NULL;
 		return -1;
 	}
-	free (core->print->lines_cache);
-	core->print->lines_cache = lines_cache;
 
 	ut64 baddr = r_config_get_i (core->config, "bin.baddr");
 
 	int line_count = start_addr? 0: 1;
-	core->print->lines_cache[0] = start_addr? 0: baddr;
+	lines_cache[0] = start_addr? 0: baddr;
 	char *buf = malloc (bsz);
 	if (!buf) {
+		free (lines_cache);
 		return -1;
 	}
 	r_cons_break_push (core->cons, NULL, NULL);
@@ -216,16 +221,15 @@ R_API int r_core_lines_initcache(RCore *core, ut64 start_addr, ut64 end_addr) {
 			}
 			if (line_count + 1 >= cache_sz) {
 				cache_sz += bsz;
-				ut64 *tmp = realloc (core->print->lines_cache,
+				ut64 *tmp = realloc (lines_cache,
 					cache_sz * sizeof (ut64));
 				if (!tmp) {
-					R_FREE (core->print->lines_cache);
 					line_count = -1;
 					goto cleanup_and_return;
 				}
-				core->print->lines_cache = tmp;
+				lines_cache = tmp;
 			}
-			core->print->lines_cache[line_count] = start_addr? off + i + 1: off + i + 1 + baddr;
+			lines_cache[line_count] = start_addr? off + i + 1: off + i + 1 + baddr;
 			line_count++;
 		}
 		off += bsz;
@@ -233,6 +237,12 @@ R_API int r_core_lines_initcache(RCore *core, ut64 start_addr, ut64 end_addr) {
 cleanup_and_return:
 	free (buf);
 	r_cons_break_pop (core->cons);
+	if (line_count == -1) {
+		free (lines_cache);
+	} else {
+		core->print->lines_cache = lines_cache;
+		core->print->lines_cache_sz = line_count;
+	}
 	return line_count;
 }
 
@@ -263,7 +273,7 @@ static int cmd_sort(void *data, const char *input) { // "sort"
 	}
 	switch (*input) {
 	case '?': // "sort?"
-		r_core_cmd_help_match (core, help_msg_s, "sort");
+		r_cons_cmd_help_match (core->cons, help_msg_s, "sort", 0, true);
 		break;
 	default: // "ls"
 		if (!arg) {
@@ -410,11 +420,11 @@ static int cmd_seek_opcode_forward(RCore *core, int numinstr) {
 
 static RFlagItem *find_adjacent_function_flag(RCore *core, bool next) {
 	RFlagItem *target = NULL;
-	RList *flags = r_flag_all_list (core->flags, false);
+	RVecFlagItemPtr *flags = r_flag_all_list (core->flags, false);
 	if (flags) {
-		RListIter *iter;
+		RFlagItem **iter;
 		RFlagItem *flag;
-		r_list_foreach (flags, iter, flag) {
+		r_flag_item_vec_foreach (flags, iter, flag) {
 			if (r_str_startswith (flag->name, "fcn.")) {
 				if (next) {
 					if (flag->addr > core->addr && (!target || flag->addr < target->addr)) {
@@ -427,7 +437,7 @@ static RFlagItem *find_adjacent_function_flag(RCore *core, bool next) {
 				}
 			}
 		}
-		r_list_free (flags);
+		RVecFlagItemPtr_free (flags);
 	}
 	return target;
 }
@@ -437,10 +447,11 @@ static void cmd_sf(RCore *core, const char *input) {
 	const char *sp = strchr (input, ' ');
 	RAnalFunction *fcn = NULL;
 	if (sp) {
-		ut64 naddr = r_num_math (core->num, sp + 1);
-		// TODO: check for rnum errors and break early
-		fcn = r_anal_get_fcn_in (core->anal, naddr, 0);
-		// TODO: check if function doesnt exist maybe?
+		const char *err = NULL;
+		ut64 naddr = r_num_math_err (core->num, sp + 1, &err);
+		if (!err) {
+			fcn = r_anal_get_fcn_in (core->anal, naddr, 0);
+		}
 	}
 	switch (input[1]) {
 	case '\0': // "sf"
@@ -450,10 +461,14 @@ static void cmd_sf(RCore *core, const char *input) {
 			R_LOG_ERROR ("Cannot find function here");
 		}
 		break;
-	case 'x': // "sf0"
+	case '0': // "sf0"
 		if (input[2] == 'x') {
-			ut64 naddr = r_num_math (core->num, input + 1);
-			// TODO: check for rnum errors and break early
+			const char *err = NULL;
+			ut64 naddr = r_num_math_err (core->num, input + 1, &err);
+			if (err) {
+				R_LOG_ERROR ("Cannot seek to unknown address '%s' (%s)", input + 1, err);
+				return;
+			}
 			fcn = r_anal_get_fcn_in (core->anal, naddr, 0);
 			if (fcn) {
 				r_core_seek (core, fcn->addr, true);
@@ -466,8 +481,12 @@ static void cmd_sf(RCore *core, const char *input) {
 		break;
 	case ' ': // "sf "
 		if (input[2] == '0') {
-			ut64 naddr = r_num_math (core->num, input + 2);
-			// TODO: check for rnum errors and break early
+			const char *err = NULL;
+			ut64 naddr = r_num_math_err (core->num, input + 2, &err);
+			if (err) {
+				R_LOG_ERROR ("Cannot seek to unknown address '%s' (%s)", input + 2, err);
+				return;
+			}
 			fcn = r_anal_get_fcn_in (core->anal, naddr, 0);
 		} else {
 			fcn = r_anal_get_function_byname (core->anal, input + 2);
@@ -481,7 +500,7 @@ static void cmd_sf(RCore *core, const char *input) {
 	case 'n': // "sfn"
 		switch (input[2]) {
 		case '?':
-			r_core_cmd_help_contains (core, help_msg_sf, "sfn");
+			r_cons_cmd_help_match (core->cons, help_msg_sf, "sfn", 0, false);
 			break;
 		case 'p': // next prelude
 			r_core_cmd0 (core, "/pp;s hit.prelude;f-hit.prelude");
@@ -511,7 +530,7 @@ static void cmd_sf(RCore *core, const char *input) {
 	case 'p': // "sfp" - find function prelude backwards
 		switch (input[2]) {
 		case '?':
-			r_core_cmd_help_contains (core, help_msg_sf, "sfp");
+			r_cons_cmd_help_match (core->cons, help_msg_sf, "sfp", 0, false);
 			break;
 		case 'p': // previous prelude
 			r_core_cmd0 (core, "s `ap`");
@@ -567,7 +586,7 @@ static void cmd_sf(RCore *core, const char *input) {
 		}
 		break;
 	case '?':
-		r_core_cmd_help (core, help_msg_sf);
+		r_cons_cmd_help (core->cons, help_msg_sf);
 		break;
 	default:
 		r_core_return_invalid_command (core, "sf", input[1]);
@@ -579,7 +598,14 @@ static void cmd_seek_opcode(RCore *core, const char *input) {
 	if (!strcmp (input, "-")) {
 		input = "-1";
 	}
-	int n = r_num_math (core->num, input);
+	const char *err = NULL;
+	int n = r_num_math_err (core->num, input, &err);
+	if (err && *input) {
+		const char *clean_input = r_str_trim_head_ro (input);
+		R_LOG_ERROR ("Cannot seek to unknown opcode '%s' (%s)", clean_input, err);
+		r_core_return_value (core, R_CMD_RC_FAILURE);
+		return;
+	}
 	if (n == 0) {
 		n = 1;
 	}
@@ -602,14 +628,38 @@ static int cmd_seek(void *data, const char *input) {
 	if ((ptr = strstr (input, "+."))) {
 		char *dup = strdup (input);
 		dup[ptr - input] = '\x00';
-		off = r_num_math (core->num, dup + 1);
+		const char *err = NULL;
+		off = r_num_math_err (core->num, dup + 1, &err);
+		if (err) {
+			R_LOG_ERROR ("Cannot seek to unknown address '%s' (%s)", dup + 1, err);
+			r_core_return_value (core, R_CMD_RC_FAILURE);
+			free (dup);
+			return 0;
+		}
 		core->addr = off;
 		free (dup);
 	}
 	const char *inputnum = strchr (input, ' ');
 	if (!r_str_startswith (input, "ort")) { // hack to handle Invalid Argument for sort
-		const char *u_num = inputnum? inputnum + 1: input + 1;
-		off = r_num_math (core->num, u_num);
+		const char *u_num;
+		if (inputnum) {
+			u_num = inputnum + 1;
+		} else if (input[0] == '+' || input[0] == '-' || input[0] == '*' || input[0] == '/' || input[0] == 'b') {
+			u_num = input + 1;
+		} else {
+			u_num = input;
+		}
+		const char *err = NULL;
+		off = r_num_math_err (core->num, u_num, &err);
+		if (err && (*input == ' ' || *input == '+' || *input == '-' || *input == 'b' || (*input >= '0' && *input <= '9'))) {
+			if (strchr (u_num, '?') != NULL) {
+				off = 0; // Fall through for help queries like s+?
+			} else {
+				R_LOG_ERROR ("Cannot seek to unknown address '%s' (%s)", u_num, err);
+				r_core_return_value (core, R_CMD_RC_FAILURE);
+				return 0;
+			}
+		}
 		if (*u_num == '-') {
 			off = -(st64)off;
 		}
@@ -635,7 +685,7 @@ static int cmd_seek(void *data, const char *input) {
 		switch (*input) {
 		case '?':
 		case 0:
-			r_core_cmd_help (core, help_msg_ss);
+			r_cons_cmd_help (core->cons, help_msg_ss);
 			return 0;
 		}
 	}
@@ -645,7 +695,7 @@ static int cmd_seek(void *data, const char *input) {
 		if (input[1] && input[2]) {
 			seek_to_register (core, input + 2, silent);
 		} else {
-			r_core_cmd_help_contains (core, help_msg_s, "sr");
+			r_cons_cmd_help_match (core->cons, help_msg_s, "sr", 0, false);
 		}
 		break;
 	case 'd': // "sd"
@@ -721,7 +771,7 @@ static int cmd_seek(void *data, const char *input) {
 				R_LOG_ERROR ("No matching comment");
 			}
 		} else {
-			r_core_cmd_help (core, help_msg_sC);
+			r_cons_cmd_help (core->cons, help_msg_sC);
 		}
 		break;
 	case '0': // "s0"
@@ -736,18 +786,10 @@ static int cmd_seek(void *data, const char *input) {
 	case '9': // "s9"
 	case ' ': // "s "
 	{
-		const char *trimin = r_str_trim_head_ro (input);
-		ut64 addr = r_num_math (core->num, trimin);
-		if (core->num->nc.errors) { // TODO expose an api for this char *r_num_failed();
-			if (core->cons->context->is_interactive) {
-				R_LOG_ERROR ("Cannot seek to unknown address '%s'", trimin);
-			}
-			break;
-		}
 		if (!silent) {
 			r_io_sundo_push (core->io, core->addr, r_print_get_cursor (core->print));
 		}
-		r_core_seek (core, addr, true);
+		r_core_seek (core, off, true);
 		r_core_block_read (core);
 	}
 	break;
@@ -786,7 +828,7 @@ static int cmd_seek(void *data, const char *input) {
 			r_config_set_i (core->config, "search.maxhits", saved_maxhits);
 			break;
 		case '?':
-			r_core_cmd_help_contains (core, help_msg_s, "s/");
+			r_cons_cmd_help_match (core->cons, help_msg_s, "s/", 0, false);
 			break;
 		default:
 			R_LOG_ERROR ("unknown search subcommand");
@@ -796,7 +838,7 @@ static int cmd_seek(void *data, const char *input) {
 	break;
 	case '.': // "s." "s.."
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_sdot);
+			r_cons_cmd_help (core->cons, help_msg_sdot);
 		} else if (input[1]) {
 			for (input++; *input == '.'; input++) {
 				;
@@ -915,7 +957,7 @@ static int cmd_seek(void *data, const char *input) {
 		break;
 	case '+': // "s+"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_s, "s+");
+			r_cons_cmd_help_match (core->cons, help_msg_s, "s+", 0, false);
 		} else if (input[1] != '\0') {
 			st64 delta = off;
 			if (input[1] == '+') {
@@ -943,7 +985,7 @@ static int cmd_seek(void *data, const char *input) {
 	case '-': // "s-"
 		switch (input[1]) {
 		case '?': // "s-?"
-			r_core_cmd_help_contains (core, help_msg_s, "s-");
+			r_cons_cmd_help_match (core->cons, help_msg_s, "s-", 0, false);
 			break;
 		case '*': // "s-*"
 			r_io_sundo_reset (core->io);
@@ -980,7 +1022,7 @@ static int cmd_seek(void *data, const char *input) {
 		break;
 	case 'n': // "sn"
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_sn);
+			r_cons_cmd_help (core->cons, help_msg_sn);
 		} else if (input[1] == 'p') { // "snp" - seek next prelude
 			__core_cmd_search_backward_prelude (core, true, true);
 		} else {
@@ -995,7 +1037,7 @@ static int cmd_seek(void *data, const char *input) {
 		break;
 	case 'p': // "sp"
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_sp);
+			r_cons_cmd_help (core->cons, help_msg_sp);
 		} else if (input[1] == 'p') { // "spp" - seek previous prelude
 			__core_cmd_search_backward_prelude (core, true, false);
 		} else {
@@ -1015,7 +1057,15 @@ static int cmd_seek(void *data, const char *input) {
 				cmd = strdup (input);
 				p = strchr (cmd + 2, ' ');
 				if (p) {
-					off = r_num_math (core->num, p + 1);
+					const char *err = NULL;
+					off = r_num_math_err (core->num, p + 1, &err);
+					if (err) {
+						const char *clean_input = r_str_trim_head_ro (p + 1);
+						R_LOG_ERROR ("Cannot evaluate block size '%s' (%s)", clean_input, err);
+						r_core_return_value (core, R_CMD_RC_FAILURE);
+						free (cmd);
+						return 0;
+					}
 					*p = '\0';
 				}
 				cmd[0] = 's';
@@ -1028,7 +1078,7 @@ static int cmd_seek(void *data, const char *input) {
 			}
 			r_core_seek_align (core, off, 0);
 		} else {
-			r_core_cmd_help_contains (core, help_msg_s, "sa");
+			r_cons_cmd_help_match (core->cons, help_msg_s, "sa", 0, false);
 		}
 		break;
 	case 'b': // "sb"
@@ -1041,7 +1091,7 @@ static int cmd_seek(void *data, const char *input) {
 			}
 			r_core_anal_bb_seek (core, off);
 		} else {
-			r_core_cmd_help_contains (core, help_msg_s, "sb");
+			r_cons_cmd_help_match (core->cons, help_msg_s, "sb", 0, false);
 		}
 		break;
 	case 'f': // "sf"
@@ -1053,13 +1103,14 @@ static int cmd_seek(void *data, const char *input) {
 			if (input[2] == 't') {
 				cmd_sort (core, input);
 			} else if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_s, "sort");
+				r_cons_cmd_help_match (core->cons, help_msg_s, "sort", 0, true);
 			} else {
 				return -1;
 			}
 			break;
 		case '?':
-			r_core_cmd_help_contains (core, help_msg_s, "so");
+			r_cons_cmd_help_match (core->cons, help_msg_s, "so", 0, false);
+			break;
 		case ' ':
 		case '\0':
 		case '+':
@@ -1072,7 +1123,7 @@ static int cmd_seek(void *data, const char *input) {
 		break;
 	case 'g': // "sg"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_s, "sg");
+			r_cons_cmd_help_match (core->cons, help_msg_s, "sg", 0, false);
 		} else {
 			RIOMap *map  = r_io_map_get_at (core->io, core->addr);
 			if (map) {
@@ -1084,7 +1135,7 @@ static int cmd_seek(void *data, const char *input) {
 		break;
 	case 'G': // "sG"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_s, "sG");
+			r_cons_cmd_help_match (core->cons, help_msg_s, "sG", 0, false);
 		} else {
 			if (!core->io->desc) {
 				break;
@@ -1100,7 +1151,7 @@ static int cmd_seek(void *data, const char *input) {
 		break;
 	case 'h': // "sh"
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_sh);
+			r_cons_cmd_help (core->cons, help_msg_sh);
 		} else {
 			char *arg = r_str_trim_dup (input + 1);
 			if (R_STR_ISNOTEMPTY (arg)) {
@@ -1127,7 +1178,17 @@ static int cmd_seek(void *data, const char *input) {
 		break;
 	case 'l': // "sl"
 	{
-		int sl_arg = r_num_math (core->num, input + 1);
+		int sl_arg = 0;
+		if (input[1] == ' ' || input[1] == '+' || input[1] == '-') {
+			const char *err = NULL;
+			sl_arg = r_num_math_err (core->num, input + 1, &err);
+			if (err) {
+				const char *clean_input = r_str_trim_head_ro (input + 1);
+				R_LOG_ERROR ("Cannot evaluate line '%s' (%s)", clean_input, err);
+				r_core_return_value (core, R_CMD_RC_FAILURE);
+				break;
+			}
+		}
 		switch (input[1]) {
 		case 'e': // "sleep"
 			{
@@ -1144,7 +1205,7 @@ static int cmd_seek(void *data, const char *input) {
 					}
 					r_cons_sleep_end (core->cons, bed);
 				} else {
-					r_core_cmd_help_match (core, help_msg_sl, "sleep");
+					r_cons_cmd_help_match (core->cons, help_msg_sl, "sleep", 0, true);
 				}
 			}
 			break;
@@ -1177,7 +1238,7 @@ static int cmd_seek(void *data, const char *input) {
 			r_cons_printf (core->cons, "%d\n", core->print->lines_cache_sz - 1);
 			break;
 		case '?': // "sl?"
-			r_core_cmd_help (core, help_msg_sl);
+			r_cons_cmd_help (core->cons, help_msg_sl);
 			break;
 		}
 	}
@@ -1186,7 +1247,7 @@ static int cmd_seek(void *data, const char *input) {
 		printPadded (core, atoi (input + 1));
 		break;
 	case '?': // "s?"
-		r_core_cmd_help (core, help_msg_s);
+		r_cons_cmd_help (core->cons, help_msg_s);
 		break;
 	default:
 		if (input[0] && isdigit (input[1])) {

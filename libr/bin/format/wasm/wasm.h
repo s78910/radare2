@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2017-2025 - cgvwzq */
+/* radare2 - LGPL - Copyright 2017-2026 - cgvwzq */
 
 #include <r_types.h>
 #include <r_util.h>
@@ -8,8 +8,7 @@
 #ifndef _INCLUDE_WASM_H_
 #define _INCLUDE_WASM_H_
 
-// version 0x1 (WIP)
-// https://github.com/WebAssembly/design/blob/master/BinaryEncoding.md
+// https://webassembly.github.io/spec/core/binary/modules.html
 
 #define R_BIN_WASM_MAGIC_BYTES "\x00" \
 			       "asm"
@@ -28,6 +27,8 @@
 #define R_BIN_WASM_SECTION_ELEMENT 0x9
 #define R_BIN_WASM_SECTION_CODE 0xa
 #define R_BIN_WASM_SECTION_DATA 0xb
+#define R_BIN_WASM_SECTION_DATACOUNT 0xc
+#define R_BIN_WASM_SECTION_TAG 0xd
 
 /*
  * Value types From:
@@ -41,6 +42,8 @@ typedef enum {
 	R_BIN_WASM_VALUETYPE_f32 = 0x7d,
 	R_BIN_WASM_VALUETYPE_f64 = 0x7c,
 	R_BIN_WASM_VALUETYPE_v128 = 0x7b,
+	R_BIN_WASM_VALUETYPE_REF = 0x64,
+	R_BIN_WASM_VALUETYPE_REF_NULL = 0x63,
 	R_BIN_WASM_VALUETYPE_REFTYPE = 0x70,
 	R_BIN_WASM_VALUETYPE_EXTERNREF = 0x6f,
 	R_BIN_WASM_VALUETYPE_FUNC = 0x60,

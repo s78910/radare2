@@ -4,7 +4,7 @@ CMDS=<<EOF
 rasm2 -f bins/src/asciistr.asm
 EOF
 EXPECT=<<EOF
-488d3d0c00000048b8d07bc8f7ff7f0000ffd0c32f686f6d652f6e6974616e6d617263656c2f7368656c6c2f6578616d706c652f6c696268656c6c6f2e736f2f686f6d652f6e6974616e6d617263656c2f7368656c6c2f6578616d706c652f6c696268656c6c6f2e736f00
+488d3d0d00000048b8d07bc8f7ff7f0000ffd0c32f686f6d652f6e6974616e6d617263656c2f7368656c6c2f6578616d706c652f6c696268656c6c6f2e736f2f686f6d652f6e6974616e6d617263656c2f7368656c6c2f6578616d706c652f6c696268656c6c6f2e736f00
 EOF
 RUN
 
@@ -292,6 +292,14 @@ mov eax, 0x21
 EOF
 RUN
 
+NAME=rasm2 tms320 c55x smem extension
+FILE=-
+CMDS=!rasm2 -a tms320 -c c55x -b 32 -d f41134127856 2>/dev/null
+EXPECT=<<EOF
+and 0x3412, abs16(0x7856)
+EOF
+RUN
+
 NAME=rasm2 -D
 FILE=-
 CMDS=!rasm2 -D -a x86 -b 32 "b821000000"
@@ -438,7 +446,7 @@ NAME=rasm2 x86.asm.32
 FILE=-
 CMDS=!rasm2 -f bins/elf/analysis/hello.asm
 EXPECT=<<EOF
-ba0e000000b917000000bb01000000b804000000cd80b801000000cd8048656c6c6f2c20776f726c64210a00
+ba0e000000b918000000bb01000000b804000000cd80b801000000cd8048656c6c6f2c20776f726c64210a00
 EOF
 RUN
 
@@ -537,7 +545,7 @@ CMDS=<<EOF
 !!rasm2 -L~arm.gnu?
 EOF
 EXPECT=<<EOF
-4
+3
 1
 EOF
 RUN
@@ -547,7 +555,7 @@ FILE=-
 REQUIRE=unix
 CMDS=!rasm2 -qL | grep -c arm
 EXPECT=<<EOF
-4
+3
 EOF
 RUN
 
@@ -672,6 +680,26 @@ FILE=-
 CMDS=!rasm2 -a ppc -b 32 -d 78238a7c
 EXPECT=<<EOF
 mr r10, r4
+EOF
+RUN
+
+# Coverage: ppc.nz rejects unaligned DS-form displacements (low 2 bits must be 0).
+NAME=rasm2 ppc.nz rejects unaligned ld displacement
+FILE=-
+CMDS=!rasm2 -a ppc -b 64 -e 'ld r3, 1(r1)'
+EXPECT=
+EXPECT_ERR=<<EOF
+ERROR: Cannot assemble 'ld r3, 1(r1)' at line 1
+EOF
+RUN
+
+# Coverage: 64-bit-only instructions reject when -b 32.
+NAME=rasm2 ppc.nz rejects ld when bits=32
+FILE=-
+CMDS=!rasm2 -a ppc -b 32 -e 'ld r3, 0(r1)'
+EXPECT=
+EXPECT_ERR=<<EOF
+ERROR: Cannot assemble 'ld r3, 0(r1)' at line 1
 EOF
 RUN
 
@@ -903,7 +931,7 @@ NAME=rasm2 .float directive
 FILE=-
 CMDS=!rasm2 -a x86 -b 64 ".float 3.14"
 EXPECT=<<EOF
-c3f5c840
+c3f54840
 EOF
 RUN
 
@@ -911,7 +939,7 @@ NAME=rasm2 .double directive
 FILE=-
 CMDS=!rasm2 -a x86 -b 64 ".double 3.14"
 EXPECT=<<EOF
-1f85eb51b81e1940
+1f85eb51b81e0940
 EOF
 RUN
 
@@ -919,7 +947,7 @@ NAME=rasm2 .bf16 directive
 FILE=-
 CMDS=!rasm2 -a x86 -b 64 ".bf16 3.14"
 EXPECT=<<EOF
-c940
+4940
 EOF
 RUN
 
@@ -927,7 +955,7 @@ NAME=rasm2 .cfloat directive
 FILE=-
 CMDS=!rasm2 -a x86 -b 64 ".cfloat 1 8 23 127 0 0;.float 3.14"
 EXPECT=<<EOF
-c3f5c840
+c3f54840
 EOF
 RUN
 
@@ -936,7 +964,7 @@ FILE=-
 CMDS=!rasm2 -a x86 -b 64 ".cfloat -1 8 23 127 0 0;.float 3.14"
 EXPECT=
 EXPECT_ERR=<<EOF
-ERROR: Cannot assemble '.cfloat -1 8 23 127 0 0' at line 1
+ERROR: Invalid .cfloat field sizes
 EOF
 RUN
 
@@ -977,5 +1005,30 @@ EXPECT=<<EOF
 4150
 4157
 4c89f8
+EOF
+RUN
+
+NAME=rasm2 -d ppc pseudo applied once
+FILE=-
+CMDS=!rasm2 -a ppc -b 64 -e -F ppc.pseudo -d 2c29000041820208
+EXPECT=<<EOF
+cr0 = (r9 == 0)
+if (cr0 & FLG_EQ) goto 0x20c
+EOF
+RUN
+
+NAME=rasm2 -D ppc pseudo applied once
+FILE=-
+CMDS=!rasm2 -a ppc -b 64 -e -F ppc.pseudo -D 2c290000
+EXPECT=<<EOF
+0x00000000   4                 2c290000  cr0 = (r9 == 0)
+EOF
+RUN
+
+NAME=rasm2 -d arm64 pseudo branch applied once
+FILE=-
+CMDS=!rasm2 -a arm -b 64 -F arm.pseudo -d 800000b4
+EXPECT=<<EOF
+if (!x0) goto 0x10
 EOF
 RUN

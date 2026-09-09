@@ -237,8 +237,9 @@ R_API RBreakpointItem* r_bp_add_sw(RBreakpoint *bp, ut64 addr, int size, int per
 	ut8 *bytes = calloc (1, size);
 	RBreakpointItem *item = NULL;
 	if (bytes) {
-		bp->iob.read_at (bp->iob.io, addr, bytes, size);
-		item = r_bp_add (bp, bytes, addr, size, R_BP_TYPE_SW, perm);
+		if (bp->iob.read_at (bp->iob.io, addr, bytes, size) == size) {
+			item = r_bp_add (bp, bytes, addr, size, R_BP_TYPE_SW, perm);
+		}
 		free (bytes);
 	}
 	return item;
@@ -319,14 +320,15 @@ R_API char *r_bp_list(RBreakpoint *bp, int rad) {
 			pj_end (pj);
 		} else if (rad) {
 			if (b->module_name) {
-				r_strbuf_appendf (sb, "dbm %s %"PFMT64d"\n", b->module_name, b->module_delta);
+				char *mf = r_name_filter_dup (b->module_name);
+				r_strbuf_appendf (sb, "dbm %s %"PFMT64d"\n", mf? mf: "", b->module_delta);
+				free (mf);
 			} else {
 				r_strbuf_appendf (sb, "db 0x%08"PFMT64x"\n", b->addr);
 			}
 		} else {
 			r_strbuf_appendf (sb, "0x%08"PFMT64x" - 0x%08"PFMT64x \
-				" %d %c%c%c %s %s %s %s cmd=\"%s\" cond=\"%s\" " \
-				"name=\"%s\" module=\"%s\"\n",
+				" %d %c%c%c %s %s %s %s",
 				b->addr, b->addr + b->size, b->size,
 				((b->perm & R_BP_PROT_READ) | (b->perm & R_BP_PROT_ACCESS)) ? 'r' : '-',
 				((b->perm & R_BP_PROT_WRITE)| (b->perm & R_BP_PROT_ACCESS)) ? 'w' : '-',
@@ -334,11 +336,25 @@ R_API char *r_bp_list(RBreakpoint *bp, int rad) {
 				b->hw ? "hw": "sw",
 				b->trace ? "trace" : "break",
 				b->enabled ? "enabled" : "disabled",
-				r_bp_is_valid (bp, b) ? "valid" : "invalid",
-				r_str_get (b->data),
-				r_str_get (b->cond),
-				r_str_get (b->name),
-				r_str_get (b->module_name));
+				r_bp_is_valid (bp, b) ? "valid" : "invalid");
+			char *f;
+			if (b->data && (f = r_name_filter_dup (b->data))) {
+				r_strbuf_appendf (sb, " cmd=\"%s\"", f);
+				free (f);
+			}
+			if (b->cond && (f = r_name_filter_dup (b->cond))) {
+				r_strbuf_appendf (sb, " cond=\"%s\"", f);
+				free (f);
+			}
+			if (b->name && (f = r_name_filter_dup (b->name))) {
+				r_strbuf_appendf (sb, " name=\"%s\"", f);
+				free (f);
+			}
+			if (b->module_name && (f = r_name_filter_dup (b->module_name))) {
+				r_strbuf_appendf (sb, " module=\"%s\"", f);
+				free (f);
+			}
+			r_strbuf_append (sb, "\n");
 		}
 	}
 	if (pj) {

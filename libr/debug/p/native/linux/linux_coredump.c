@@ -183,18 +183,14 @@ static proc_per_thread_t *get_proc_thread_content(int pid, int tid) {
 		//empty body
 	}
 	p_sigpend = temp_p_sigpend - 1;
-	while (isdigit ((ut8)*temp_p_sigpend++)) {
-		//empty body
-	}
-	p_sigpend[temp_p_sigpend - p_sigpend - 1] = '\0';
+	temp_p_sigpend = r_str_trim_head_digits (temp_p_sigpend);
+	*temp_p_sigpend = '\0';
 	while (!isdigit ((ut8)*temp_p_sighold++)) {
 		//empty body
 	}
 	p_sighold = temp_p_sighold - 1;
-	while (isdigit ((ut8)*temp_p_sighold++)) {
-		//empty body
-	}
-	p_sighold[temp_p_sighold - p_sighold - 1] = '\0';
+	temp_p_sighold = r_str_trim_head_digits (temp_p_sighold);
+	*temp_p_sighold = '\0';
 	t->sigpend = atoi (p_sigpend);
 	t->sighold = atoi (p_sighold);
 	free (buff);
@@ -756,6 +752,19 @@ static bool dump_elf_note(RBuffer *dest, void *note_data, size_t note_section_si
 	return r_buf_append_bytes (dest, (const ut8*)note_data, note_section_size);
 }
 
+static bool read_debug_memory(RDebug *dbg, ut64 addr, ut8 *buf, size_t size) {
+	while (size > 0) {
+		const int chunk_size = size > ST32_MAX? ST32_MAX: (int)size;
+		if (dbg->iob.read_at (dbg->iob.io, addr, buf, chunk_size) != chunk_size) {
+			return false;
+		}
+		addr += chunk_size;
+		buf += chunk_size;
+		size -= chunk_size;
+	}
+	return true;
+}
+
 static bool dump_elf_map_content(RDebug *dbg, RBuffer *dest, linux_map_entry_t *head, pid_t pid) {
 	linux_map_entry_t *p;
 	ut8 *map_content;
@@ -773,8 +782,7 @@ static bool dump_elf_map_content(RDebug *dbg, RBuffer *dest, linux_map_entry_t *
 		if (!map_content) {
 			return false;
 		}
-		ret = dbg->iob.read_at (dbg->iob.io, p->start_addr, map_content, size);
-		if (!ret) {
+		if (!read_debug_memory (dbg, p->start_addr, map_content, size)) {
 			eprintf ("Problems reading %"PFMTSZd" bytes at %"PFMT64x"\n", size, (ut64)p->start_addr);
 		} else {
 			ret = r_buf_append_bytes (dest, (const ut8*)map_content, size);
@@ -841,10 +849,8 @@ static proc_per_process_t *get_proc_process_content(RDebug *dbg) {
 			//empty body
 		}
 		p_uid = temp_p_uid - 1;
-		while (isdigit ((ut8)*temp_p_uid++)) {
-			//empty body
-		}
-		p_uid[temp_p_uid - p_uid - 1] = '\0';
+		temp_p_uid = r_str_trim_head_digits (temp_p_uid);
+		*temp_p_uid = '\0';
 	} else {
 		p_uid = NULL;
 	}
@@ -856,10 +862,8 @@ static proc_per_process_t *get_proc_process_content(RDebug *dbg) {
 			//empty body
 		}
 		p_gid = temp_p_gid - 1;
-		while (isdigit ((ut8)*temp_p_gid++)) {
-			//empty body
-		}
-		p_gid[temp_p_gid - p_gid - 1] = '\0';
+		temp_p_gid = r_str_trim_head_digits (temp_p_gid);
+		*temp_p_gid = '\0';
 	} else {
 		p_gid = NULL;
 	}

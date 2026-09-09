@@ -18,6 +18,23 @@ EOF
 EXPECT_ERR=
 RUN
 
+NAME=list ppc syscalls
+FILE=-
+CMDS=<<EOF
+-a ppc
+-b 32
+-e asm.os=linux
+asl~?
+-b 64
+asl~?
+EOF
+EXPECT=<<EOF
+35
+34
+EOF
+EXPECT_ERR=
+RUN
+
 NAME=as <num> honors user argument
 FILE=-
 CMDS=<<EOF
@@ -36,6 +53,24 @@ EXPECT=<<EOF
 2 = open ("", 0x00000000, 0x00000000)
 4 = stat ("", 0x00000000)
 1 = write (0, "", 0)
+EOF
+EXPECT_ERR=
+RUN
+
+NAME=syscall names resolve x86_64 numbers
+FILE=-
+CMDS=<<EOF
+-a x86
+-b 64
+-e asm.os=linux
+asl read
+asl nanosleep
+asl clock_nanosleep
+EOF
+EXPECT=<<EOF
+0
+35
+230
 EOF
 EXPECT_ERR=
 RUN

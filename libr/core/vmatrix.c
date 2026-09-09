@@ -236,10 +236,10 @@ static void draw_level1_boxes(RVMatrix *rvm) {
 			item_count++;
 		}
 	} else if (!strcmp (cat, "flags")) {
-		RListIter *iter;
+		RFlagItem **iter;
 		RFlagItem *flag;
-		const RList *flags = r_flag_get_list (rvm->core->flags, 0);
-		r_list_foreach (flags, iter, flag) {
+		const RVecFlagItemPtr *flags = r_flag_get_vec (rvm->core->flags, 0);
+		r_flag_item_vec_foreach (flags, iter, flag) {
 			if (item_count >= max_items) {
 				break;
 			}
@@ -357,17 +357,17 @@ static void draw_level1_boxes(RVMatrix *rvm) {
 		}
 	} else if (!strcmp (cat, "sections")) {
 		RBinSection *section;
-		RListIter *iter;
-		const RList *sections = r_bin_get_sections (rvm->core->bin);
-		r_list_foreach (sections, iter, section) {
-			if (item_count >= max_items) {
-				break;
-			}
-			if (rvm->filter && !strstr (section->name, rvm->filter)) {
-				continue;
-			}
-			bool is_selected = (item_count == rvm->selected_item);
-			draw_highlighted_box (can, xpos, ypos, boxwidth, rvm->box_h, is_selected);
+		RVecRBinSection *sections = r_bin_get_sections_vec (rvm->core->bin);
+		if (sections) {
+			R_VEC_FOREACH (sections, section) {
+				if (item_count >= max_items) {
+					break;
+				}
+				if (rvm->filter && !strstr (section->name, rvm->filter)) {
+					continue;
+				}
+				bool is_selected = (item_count == rvm->selected_item);
+				draw_highlighted_box (can, xpos, ypos, boxwidth, rvm->box_h, is_selected);
 			char addr_str[256];
 			snprintf (addr_str, sizeof (addr_str), "0x%" PFMT64x, section->vaddr);
 			char *name = r_str_ndup (section->name, boxwidth - 4 - strlen (addr_str));
@@ -383,6 +383,7 @@ static void draw_level1_boxes(RVMatrix *rvm) {
 				col = 0;
 			}
 			item_count++;
+		}
 		}
 	} else {
 		r_cons_canvas_write_at (can, "Category not implemented yet", 2, ypos);
@@ -411,11 +412,11 @@ static void draw_level2_disassembly(RVMatrix *rvm) {
 
 		// Get flags from the selected flagspace
 		RCore *core = rvm->core;
-		RList *all_flags = r_flag_all_list (core->flags, true);
+		RVecFlagItemPtr *all_flags = r_flag_all_list (core->flags, true);
 		if (all_flags) {
-			RListIter *iter;
+			RFlagItem **iter;
 			RFlagItem *flag;
-			r_list_foreach (all_flags, iter, flag) {
+			r_flag_item_vec_foreach (all_flags, iter, flag) {
 				if (item_count >= max_items) {
 					break;
 				}
@@ -439,7 +440,7 @@ static void draw_level2_disassembly(RVMatrix *rvm) {
 					item_count++;
 				}
 			}
-			r_list_free (all_flags);
+			RVecFlagItemPtr_free (all_flags);
 		}
 		rvm->rows = (item_count + rvm->cols - 1) / rvm->cols;
 	} else {
@@ -792,12 +793,12 @@ R_API void r_core_visual_matrix(RCore *core) {
 		case 'd':
 			if (rvm.level == 2 && !strcmp (level0_categories[rvm.selected], "flagspaces") && rvm.selected_flagspace) {
 				// Go to disassembly of selected flag
-				RList *all_flags = r_flag_all_list (rvm.core->flags, true);
+				RVecFlagItemPtr *all_flags = r_flag_all_list (rvm.core->flags, true);
 				if (all_flags) {
-					RListIter *iter;
+					RFlagItem **iter;
 					RFlagItem *flag;
 					int count = 0;
-					r_list_foreach (all_flags, iter, flag) {
+					r_flag_item_vec_foreach (all_flags, iter, flag) {
 						if (flag->space && !strcmp (flag->space->name, rvm.selected_flagspace)) {
 							if (count == rvm.selected_item) {
 								rvm.selected_addr = flag->addr;
@@ -808,7 +809,7 @@ R_API void r_core_visual_matrix(RCore *core) {
 							count++;
 						}
 					}
-					r_list_free (all_flags);
+					RVecFlagItemPtr_free (all_flags);
 				}
 			} else if (rvm.level < 2) {
 				// Set selected_addr or selected_flagspace based on current selection before entering level 2
@@ -840,11 +841,11 @@ R_API void r_core_visual_matrix(RCore *core) {
 							count++;
 						}
 					} else if (!strcmp (cat, "flags")) {
-						RListIter *iter;
+						RFlagItem **iter;
 						RFlagItem *flag;
-						const RList *flags = r_flag_get_list (rvm.core->flags, 0);
+						const RVecFlagItemPtr *flags = r_flag_get_vec (rvm.core->flags, 0);
 						int count = 0;
-						r_list_foreach (flags, iter, flag) {
+						r_flag_item_vec_foreach (flags, iter, flag) {
 							if (count == rvm.selected_item) {
 								rvm.selected_addr = flag->addr;
 								break;
@@ -864,10 +865,9 @@ R_API void r_core_visual_matrix(RCore *core) {
 						}
 					} else if (!strcmp (cat, "sections")) {
 						RBinSection *section;
-						RListIter *iter;
-						const RList *sections = r_bin_get_sections (rvm.core->bin);
+						RVecRBinSection *sections = r_bin_get_sections_vec (rvm.core->bin);
 						int count = 0;
-						r_list_foreach (sections, iter, section) {
+						R_VEC_FOREACH (sections, section) {
 							if (count == rvm.selected_item) {
 								rvm.selected_addr = section->vaddr;
 								break;
@@ -884,12 +884,12 @@ R_API void r_core_visual_matrix(RCore *core) {
 		case '\n': // Enter key - alias for 'd'
 			if (rvm.level == 2 && !strcmp (level0_categories[rvm.selected], "flagspaces") && rvm.selected_flagspace) {
 				// Go to disassembly of selected flag
-				RList *all_flags = r_flag_all_list (rvm.core->flags, true);
+				RVecFlagItemPtr *all_flags = r_flag_all_list (rvm.core->flags, true);
 				if (all_flags) {
-					RListIter *iter;
+					RFlagItem **iter;
 					RFlagItem *flag;
 					int count = 0;
-					r_list_foreach (all_flags, iter, flag) {
+					r_flag_item_vec_foreach (all_flags, iter, flag) {
 						if (flag->space && !strcmp (flag->space->name, rvm.selected_flagspace)) {
 							if (count == rvm.selected_item) {
 								rvm.selected_addr = flag->addr;
@@ -900,7 +900,7 @@ R_API void r_core_visual_matrix(RCore *core) {
 							count++;
 						}
 					}
-					r_list_free (all_flags);
+					RVecFlagItemPtr_free (all_flags);
 				}
 			} else if (rvm.level < 2) {
 				// Set selected_addr or selected_flagspace based on current selection before entering level 2
@@ -932,11 +932,11 @@ R_API void r_core_visual_matrix(RCore *core) {
 							count++;
 						}
 					} else if (!strcmp (cat, "flags")) {
-						RListIter *iter;
+						RFlagItem **iter;
 						RFlagItem *flag;
-						const RList *flags = r_flag_get_list (rvm.core->flags, 0);
+						const RVecFlagItemPtr *flags = r_flag_get_vec (rvm.core->flags, 0);
 						int count = 0;
-						r_list_foreach (flags, iter, flag) {
+						r_flag_item_vec_foreach (flags, iter, flag) {
 							if (count == rvm.selected_item) {
 								rvm.selected_addr = flag->addr;
 								break;
@@ -956,10 +956,9 @@ R_API void r_core_visual_matrix(RCore *core) {
 						}
 					} else if (!strcmp (cat, "sections")) {
 						RBinSection *section;
-						RListIter *iter;
-						const RList *sections = r_bin_get_sections (rvm.core->bin);
+						RVecRBinSection *sections = r_bin_get_sections_vec (rvm.core->bin);
 						int count = 0;
-						r_list_foreach (sections, iter, section) {
+						R_VEC_FOREACH (sections, section) {
 							if (count == rvm.selected_item) {
 								rvm.selected_addr = section->vaddr;
 								break;
@@ -1004,8 +1003,7 @@ R_API void r_core_visual_matrix(RCore *core) {
 						max_items++;
 					}
 				} else if (!strcmp (cat, "flags")) {
-					const RList *flags = r_flag_get_list (rvm.core->flags, 0);
-					max_items = r_list_length (flags);
+					max_items = r_flag_item_vec_length (r_flag_get_vec (rvm.core->flags, 0));
 				} else if (!strcmp (cat, "symbols")) {
 					RVecRBinSymbol *symbols = r_bin_get_symbols_vec (rvm.core->bin);
 					max_items = symbols ? RVecRBinSymbol_length (symbols) : 0;
@@ -1013,8 +1011,8 @@ R_API void r_core_visual_matrix(RCore *core) {
 					RVecRBinImport *imports_vec = r_bin_get_imports_vec (rvm.core->bin);
 					max_items = imports_vec ? RVecRBinImport_length (imports_vec) : 0;
 				} else if (!strcmp (cat, "sections")) {
-					const RList *sections = r_bin_get_sections (rvm.core->bin);
-					max_items = r_list_length (sections);
+					RVecRBinSection *sections = r_bin_get_sections_vec (rvm.core->bin);
+					max_items = sections? RVecRBinSection_length (sections): 0;
 				} else if (!strcmp (cat, "comments")) {
 					RIntervalTreeIter it;
 					RAnalMetaItem *item;
@@ -1031,16 +1029,16 @@ R_API void r_core_visual_matrix(RCore *core) {
 				rvm.selected_item++;
 				// Count flags in the selected flagspace for bounds checking
 				int max_items = 0;
-				RList *all_flags = r_flag_all_list (rvm.core->flags, true);
+				RVecFlagItemPtr *all_flags = r_flag_all_list (rvm.core->flags, true);
 				if (all_flags) {
-					RListIter *iter;
+					RFlagItem **iter;
 					RFlagItem *flag;
-					r_list_foreach (all_flags, iter, flag) {
+					r_flag_item_vec_foreach (all_flags, iter, flag) {
 						if (flag->space && !strcmp (flag->space->name, rvm.selected_flagspace)) {
 							max_items++;
 						}
 					}
-					r_list_free (all_flags);
+					RVecFlagItemPtr_free (all_flags);
 				}
 				if (rvm.selected_item >= max_items) {
 					rvm.selected_item = 0; // Wrap around
@@ -1075,8 +1073,7 @@ R_API void r_core_visual_matrix(RCore *core) {
 							max_items++;
 						}
 					} else if (!strcmp (cat, "flags")) {
-						const RList *flags = r_flag_get_list (rvm.core->flags, 0);
-						max_items = r_list_length (flags);
+						max_items = r_flag_item_vec_length (r_flag_get_vec (rvm.core->flags, 0));
 					} else if (!strcmp (cat, "symbols")) {
 						RVecRBinSymbol *symbols = r_bin_get_symbols_vec (rvm.core->bin);
 						max_items = symbols ? RVecRBinSymbol_length (symbols) : 0;
@@ -1084,8 +1081,8 @@ R_API void r_core_visual_matrix(RCore *core) {
 						RVecRBinImport *imports_vec = r_bin_get_imports_vec (rvm.core->bin);
 						max_items = imports_vec ? RVecRBinImport_length (imports_vec) : 0;
 					} else if (!strcmp (cat, "sections")) {
-						const RList *sections = r_bin_get_sections (rvm.core->bin);
-						max_items = r_list_length (sections);
+						RVecRBinSection *sections = r_bin_get_sections_vec (rvm.core->bin);
+						max_items = sections? RVecRBinSection_length (sections): 0;
 					} else if (!strcmp (cat, "comments")) {
 						RIntervalTreeIter it;
 						RAnalMetaItem *item;
@@ -1105,16 +1102,16 @@ R_API void r_core_visual_matrix(RCore *core) {
 				} else {
 					// Wrap around to last item
 					int max_items = 0;
-					RList *all_flags = r_flag_all_list (rvm.core->flags, true);
+					RVecFlagItemPtr *all_flags = r_flag_all_list (rvm.core->flags, true);
 					if (all_flags) {
-						RListIter *iter;
+						RFlagItem **iter;
 						RFlagItem *flag;
-						r_list_foreach (all_flags, iter, flag) {
+						r_flag_item_vec_foreach (all_flags, iter, flag) {
 							if (flag->space && !strcmp (flag->space->name, rvm.selected_flagspace)) {
 								max_items++;
 							}
 						}
-						r_list_free (all_flags);
+						RVecFlagItemPtr_free (all_flags);
 					}
 					if (max_items > 0) {
 						rvm.selected_item = max_items - 1;
@@ -1249,11 +1246,11 @@ R_API void r_core_visual_matrix(RCore *core) {
 											count++;
 										}
 									} else if (!strcmp (cat, "flags")) {
-										RListIter *iter;
+										RFlagItem **iter;
 										RFlagItem *flag;
-										const RList *flags = r_flag_get_list (rvm.core->flags, 0);
+										const RVecFlagItemPtr *flags = r_flag_get_vec (rvm.core->flags, 0);
 										int count = 0;
-										r_list_foreach (flags, iter, flag) {
+										r_flag_item_vec_foreach (flags, iter, flag) {
 											if (count == rvm.selected_item) {
 												rvm.selected_addr = flag->addr;
 												break;
@@ -1273,10 +1270,9 @@ R_API void r_core_visual_matrix(RCore *core) {
 										}
 									} else if (!strcmp (cat, "sections")) {
 										RBinSection *section;
-										RListIter *iter;
-										const RList *sections = r_bin_get_sections (rvm.core->bin);
+										RVecRBinSection *sections = r_bin_get_sections_vec (rvm.core->bin);
 										int count = 0;
-										r_list_foreach (sections, iter, section) {
+										R_VEC_FOREACH (sections, section) {
 											if (count == rvm.selected_item) {
 												rvm.selected_addr = section->vaddr;
 												break;
@@ -1311,12 +1307,12 @@ R_API void r_core_visual_matrix(RCore *core) {
 							if (clicked_item >= 0 && clicked_item < rvm.rows) {
 								if (rvm.selected_item == clicked_item) {
 									// Same flag clicked again, go to disassembly
-									RList *all_flags = r_flag_all_list (rvm.core->flags, true);
+									RVecFlagItemPtr *all_flags = r_flag_all_list (rvm.core->flags, true);
 									if (all_flags) {
-										RListIter *iter;
+										RFlagItem **iter;
 										RFlagItem *flag;
 										int count = 0;
-										r_list_foreach (all_flags, iter, flag) {
+										r_flag_item_vec_foreach (all_flags, iter, flag) {
 											if (flag->space && !strcmp (flag->space->name, rvm.selected_flagspace)) {
 												if (count == clicked_item) {
 													rvm.selected_addr = flag->addr;
@@ -1327,7 +1323,7 @@ R_API void r_core_visual_matrix(RCore *core) {
 												count++;
 											}
 										}
-										r_list_free (all_flags);
+										RVecFlagItemPtr_free (all_flags);
 									}
 								} else {
 									// Different flag clicked, just select it

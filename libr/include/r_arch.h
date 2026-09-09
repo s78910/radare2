@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2022-2025 - pancake, condret */
+/* radare2 - LGPL - Copyright 2022-2026 - pancake, condret */
 
 #ifndef R2_ARCH_H
 #define R2_ARCH_H
@@ -104,12 +104,12 @@ typedef enum {
 	R_ARCH_OP_MASK_HINT  = 4, // calls r_anal_op_hint to override anal options
 	R_ARCH_OP_MASK_OPEX  = 8, // fills RAnalop->opex info
 	R_ARCH_OP_MASK_DISASM = 16, // fills RAnalop->mnemonic // should be RAnalOp->disasm // only from r_core_anal_op()
+	R_ARCH_OP_MASK_STATEFUL = 32, // let arch plugins keep cross-insn states. useful for linear code. not included in MASK_ALL
 	R_ARCH_OP_MASK_ALL   = 1 | 2 | 4 | 8 | 16
 } RAnalOpMask;
 
 typedef struct r_arch_t {
 	RBinBind binb; // required for java, dalvik, wasm, pickle and pyc plugin... pending refactor
-	struct r_esil_t *esil;
 	RNum *num; // XXX maybe not required
 	struct r_arch_session_t *session;
 	RArchConfig *cfg; // global / default config
@@ -151,7 +151,8 @@ typedef bool (*RArchPluginModifyCallback)(RArchSession *s, struct r_anal_op_t *o
 typedef RList *(*RArchPluginPreludesCallback)(RArchSession *s);
 typedef bool (*RArchPluginInitCallback)(RArchSession *s);
 typedef bool (*RArchPluginFiniCallback)(RArchSession *s);
-typedef bool (*RArchPluginEsilCallback)(RArchSession *s, RArchEsilAction action);
+typedef bool (*RArchPluginEsilCallback)(RArchSession *s, REsil *esil, RArchEsilAction action);
+typedef bool (*RArchPluginResetCallback)(RArchSession *s);
 
 // TODO: use `const char *const` instead of `char*`
 typedef struct r_arch_plugin_t {
@@ -174,6 +175,7 @@ typedef struct r_arch_plugin_t {
 	const RArchPluginMnemonicsCallback mnemonics;
 	const RArchPluginPreludesCallback preludes;
 	const RArchPluginEsilCallback esilcb;
+	const RArchPluginResetCallback reset;
 } RArchPlugin;
 
 R_API char *r_arch_platform_unset(RArch *arch, const char *name);
@@ -190,12 +192,13 @@ R_API bool r_arch_unload_decoder(RArch *arch, const char *dname);
 R_API int r_arch_info(RArch *arch, int query);
 R_API bool r_arch_decode(RArch *a, RAnalOp *op, RArchDecodeMask mask);
 R_API bool r_arch_encode(RArch *a, RAnalOp *op, RArchEncodeMask mask);
-R_API bool r_arch_esilcb(RArch *a, RArchEsilAction action);
+R_API bool r_arch_esilcb(RArch *a, REsil *esil, RArchEsilAction action);
 //R_API bool r_arch_esil_init(RArch *arch, const char *dname, REsil *esil);
 //R_API void r_arch_esil_fini(RArch *arch, const char *dname, REsil *esil);
 
 R_API RArchSession *r_arch_session(RArch *arch, RArchConfig *cfg, RArchPlugin *ap);
 R_API bool r_arch_session_decode(RArchSession *as, RAnalOp *op, RArchDecodeMask mask);
+R_API bool r_arch_session_reset(RArchSession *as);
 R_API bool r_arch_session_encode(RArchSession *as, RAnalOp *op, RArchEncodeMask mask);
 R_API bool r_arch_session_patch(RArchSession *as, RAnalOp *op, RArchModifyMask mask);
 R_API int r_arch_session_info(RArchSession *as, int q);
@@ -216,6 +219,8 @@ R_API void r_arch_free(RArch *arch);
 // aconfig.c
 R_API void r_arch_config_use(RArchConfig *config, const char * R_NULLABLE arch);
 R_API void r_arch_config_set_cpu(RArchConfig *config, const char * R_NULLABLE cpu);
+R_API RList *r_arch_plugin_cpus(RArchPlugin *plugin);
+R_API char *r_arch_plugin_cpucheck(RArchPlugin *plugin, const char *cpu);
 R_API bool r_arch_config_set_syntax(RArchConfig *config, int syntax);
 R_API bool r_arch_config_set_bits(RArchConfig *c, int bits);
 R_API RArchConfig *r_arch_config_new(void);
@@ -313,8 +318,10 @@ extern const RArchPlugin r_arch_plugin_or1k;
 extern const RArchPlugin r_arch_plugin_pdp11;
 extern const RArchPlugin r_arch_plugin_pic;
 extern const RArchPlugin r_arch_plugin_pickle;
+extern const RArchPlugin r_arch_plugin_ptx;
 extern const RArchPlugin r_arch_plugin_ppc_cs;
 extern const RArchPlugin r_arch_plugin_ppc_gnu;
+extern const RArchPlugin r_arch_plugin_ppc_nz;
 extern const RArchPlugin r_arch_plugin_propeller;
 extern const RArchPlugin r_arch_plugin_pyc;
 extern const RArchPlugin r_arch_plugin_riscv;

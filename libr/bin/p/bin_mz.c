@@ -43,7 +43,7 @@ static bool knownHeaderBuffer(RBuffer *b, ut16 offset) {
 }
 
 static bool checkEntrypointBuffer(RBuffer *b) {
-	st16 cs = r_buf_read_le16_at (b, 0x16);
+	ut16 cs = r_buf_read_le16_at (b, 0x16);
 	ut16 ip = r_buf_read_le16_at (b, 0x14);
 	ut16 v = r_buf_read_le16_at (b, 0x08);
 	if ((st16)v < 1) {
@@ -141,10 +141,6 @@ static RList *entries(RBinFile *bf) {
 	return res;
 }
 
-static RList *sections(RBinFile *bf) {
-	return r_bin_mz_get_segments (bf->bo->bin_obj, bf->size);
-}
-
 static RBinInfo *info(RBinFile *bf) {
 	RBinInfo *const ret = R_NEW0 (RBinInfo);
 	if (!ret) {
@@ -195,27 +191,9 @@ static char *header(RBinFile *bf, int mode) {
 	return r_strbuf_drain (sb);
 }
 
-static RList *relocs(RBinFile *bf) {
+static RVecRBinReloc *relocs(RBinFile *bf) {
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo && bf->bo->bin_obj, NULL);
-	const struct r_bin_mz_reloc_t *relocs = NULL;
-	int i;
-
-	RList *ret = r_list_newf (free);
-	if (!ret) {
-		return NULL;
-	}
-	if (!(relocs = r_bin_mz_get_relocs (bf->bo->bin_obj))) {
-		return ret;
-	}
-	for (i = 0; !relocs[i].last; i++) {
-		RBinReloc *rel = R_NEW0 (RBinReloc);
-		rel->type = R_BIN_RELOC_16;
-		rel->vaddr = relocs[i].vaddr;
-		rel->paddr = relocs[i].paddr;
-		r_list_append (ret, rel);
-	}
-	free ((void *)relocs);
-	return ret;
+	return r_bin_mz_get_relocs (bf->bo->bin_obj);
 }
 
 static RList* fields(RBinFile *bf) {
@@ -252,6 +230,10 @@ static RList* fields(RBinFile *bf) {
 	return ret;
 }
 
+static bool sections_vec(RBinFile *bf) {
+	return r_bin_mz_load_segments (bf->bo->bin_obj, bf->size, &bf->bo->sections_vec);
+}
+
 RBinPlugin r_bin_plugin_mz = {
 	.meta = {
 		.name = "mz",
@@ -265,7 +247,7 @@ RBinPlugin r_bin_plugin_mz = {
 	.check = &check,
 	.binsym = &binsym,
 	.entries = &entries,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.info = &info,
 	.header = &header,
 	.fields = &fields,

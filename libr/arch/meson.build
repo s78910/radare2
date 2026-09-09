@@ -159,6 +159,7 @@ r_arch_sources = [
   'p/sh_cs/plugin.c',
   'p/sm5xx/plugin.c',
   'p/sm5xx/sm5xx.c',
+  'p/ptx/plugin.c',
   'p/tricore_cs/plugin.c',
   'p/i8080/i8080.c',
   'p/i8080/plugin.c',
@@ -184,6 +185,12 @@ if arch_plugins.contains('python') or arch_plugins.contains('pyc') or arch_plugi
     'p/pyc/opcode.c',
     'p/pyc/pyc_dis.c',
     'p/pickle/plugin.c'
+  ]
+endif
+
+if arch_plugins.contains('ppc_nz')
+  r_arch_sources += [
+    'p/ppc_nz/plugin.c'
   ]
 endif
 

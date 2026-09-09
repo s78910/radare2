@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2009-2024 - pancake */
+/* radare - LGPL - Copyright 2009-2026 - pancake */
 
 #include <r_reg.h>
 #include <r_util.h>
@@ -30,6 +30,87 @@ static ut64 parse_size(char *s, char **end) {
 	return strtoul (s, end, 0) << 3;
 }
 
+// returns the bit offset just past the last reserved byte in the given arena.
+// considers both materialized RRegItems and declared RRegVBank ranges so that
+// `$` resolves to the true tail when a vbank has reserved space.
+static int parse_def_tail(RReg *reg, int type) {
+	int last = 0;
+	RListIter *iter;
+	RRegItem *ri;
+	r_list_foreach (reg->regset[type].regs, iter, ri) {
+		if (ri->size >= 8 && ri->offset >= 0) {
+			int pos = ri->offset + ri->size;
+			if (pos > last) {
+				last = pos;
+			}
+		}
+	}
+	RRegVBank *vb;
+	R_VEC_FOREACH (&reg->regset[type].vbanks, vb) {
+		int pos = vb->offset + vb->size * vb->count;
+		if (pos > last) {
+			last = pos;
+		}
+	}
+	return last;
+}
+
+static const char *parse_vbank_suffix(char *name, int *count) {
+	*count = 0;
+	if (!name[0] || name[1] != '[' || !r_reg_vbank_prefix (name[0])) {
+		return NULL;
+	}
+	const char *p = name + 2;
+	if (!isdigit ((ut8)*p) || *p == '0') {
+		return "Invalid vbank count";
+	}
+	char *end = NULL;
+	long n = strtol (p, &end, 10);
+	if (n > R_REG_VBANK_MAX_REGS) {
+		return "Invalid vbank count";
+	}
+	if (*end != ']' || end[1]) {
+		return "Invalid vbank suffix";
+	}
+	name[1] = 0;
+	*count = (int)n;
+	return NULL;
+}
+
+static bool vbank_item_match(const char *name, char prefix, int count) {
+	const char *p = name + 1;
+	if (name[0] != prefix || !isdigit ((ut8)*p)) {
+		return false;
+	}
+	if (*p == '0' && p[1]) {
+		return false;
+	}
+	char *end = NULL;
+	long n = strtol (p, &end, 10);
+	return !*end && n < count;
+}
+
+static bool profile_has_duplicate(RReg *reg, const char *name, int count) {
+	const char prefix = name[0];
+	int i;
+	for (i = 0; i < R_REG_TYPE_LAST; i++) {
+		RListIter *iter;
+		RRegItem *ri;
+		r_list_foreach (reg->regset[i].regs, iter, ri) {
+			if (count > 0? vbank_item_match (ri->name, prefix, count): !strcmp (ri->name, name)) {
+				return true;
+			}
+		}
+		RRegVBank *vb;
+		R_VEC_FOREACH (&reg->regset[i].vbanks, vb) {
+			if (count > 0? vb->prefix == prefix: vbank_item_match (name, vb->prefix, vb->count)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 //TODO: implement bool r_reg_set_def_string()
 static const char *parse_def(RReg *reg, char **tok, const int n) {
 	char *end = "";
@@ -56,12 +137,60 @@ static const char *parse_def(RReg *reg, char **tok, const int n) {
 	if (type < 0 || type2 < 0) {
 		return "Invalid register type";
 	}
-	RRegItem *ri = r_reg_get (reg, tok[1], R_REG_TYPE_ALL);
-	if (ri) {
-		R_LOG_WARN ("Duplicated register definition for '%s' has been ignored", tok[1]);
+
+	int vcount = 0;
+	const char *vberr = parse_vbank_suffix (tok[1], &vcount);
+	if (vberr) {
+		return vberr;
+	}
+	if (profile_has_duplicate (reg, tok[1], vcount)) {
+		if (vcount > 0) {
+			R_LOG_WARN ("Duplicated register bank definition for '%c[%d]' has been ignored", tok[1][0], vcount);
+		} else {
+			R_LOG_WARN ("Duplicated register definition for '%s' has been ignored", tok[1]);
+		}
 		return NULL;
 	}
-	r_unref (ri);
+	if (vcount > 0) {
+		// virtual register bank declaration: lazy, no per-item RRegItem yet
+		int vsize = parse_size (tok[2], &end);
+		if (*end || !vsize) {
+			return "Invalid size";
+		}
+		int voff;
+		if (!strcmp (tok[3], "$")) {
+			voff = parse_def_tail (reg, type2);
+		} else if (tok[3][0] == '?') {
+			return "vbank offset must be numeric or '$'";
+		} else {
+			voff = parse_size (tok[3], &end);
+			if (*end) {
+				return "Invalid offset";
+			}
+		}
+		int vpacked = parse_size (tok[4], &end);
+		if (*end) {
+			return "Invalid packed size";
+		}
+		RRegVBank *vb = RVecRegVBank_emplace_back (&reg->regset[type2].vbanks);
+		if (!vb) {
+			return "Unable to allocate memory";
+		}
+		vb->prefix = tok[1][0];
+		vb->type = type;
+		vb->arena = type2;
+		vb->count = vcount;
+		vb->size = vsize;
+		vb->packed_size = vpacked;
+		vb->offset = voff;
+		r_reg_hasbits_use (reg, vsize);
+		int tail = voff + vsize * vcount;
+		if (tail > reg->size) {
+			reg->size = tail;
+		}
+		reg->regset[type2].maskregstype |= (1ULL << type);
+		return NULL;
+	}
 
 	RRegItem *item = R_NEW0 (RRegItem);
 	if (!item) {
@@ -73,7 +202,6 @@ static const char *parse_def(RReg *reg, char **tok, const int n) {
 	item->size = parse_size (tok[2], &end);
 	if (*end || !item->size) {
 		r_reg_item_free (item);
-		r_unref (ri);
 		return "Invalid size";
 	}
 	if (!strcmp (tok[3], "?")) {
@@ -83,18 +211,7 @@ static const char *parse_def(RReg *reg, char **tok, const int n) {
 	} else if (!strcmp (tok[3], "?1")) {
 		item->offset = -2; // TODO: use an enum here
 	} else if (!strcmp (tok[3], "$")) {
-		RRegItem *ri;
-		RListIter *iter;
-		int last = 0;
-		r_list_foreach (reg->regset[type].regs, iter, ri) {
-			if (ri->size >= 8 && ri->offset >= 0) {
-				int pos = ri->offset + ri->size;
-				if (pos > last) {
-					last = pos;
-				}
-			}
-		}
-		item->offset = last;
+		item->offset = parse_def_tail (reg, type);
 	} else {
 		item->offset = parse_size (tok[3], &end);
 	}
@@ -280,11 +397,7 @@ R_API bool r_reg_set_profile_string(RReg *reg, const char *str) {
 			}
 		}
 	} while (*p++);
-	if (!have_a0) {
-		R_LOG_ERROR ("=A0 is not defined");
-		// r_reg_free_internal (reg, false);
-		// return false;
-	}
+	(void)have_a0;
 	reg->size = 0;
 	for (i = 0; i < R_REG_TYPE_LAST; i++) {
 		RRegSet *rs = &reg->regset[i];

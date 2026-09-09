@@ -30,13 +30,13 @@ static int readline_callback(RCons *cons, void *_a, const char *str) {
 	r_asm_set_pc (core->rasm, a->off);
 	if (*str == '!') {
 		a->amode = !a->amode;
-		line->buffer.data[0] = 0;
-		line->buffer.length = 0;
+		line->state.buffer.data[0] = 0;
+		line->state.buffer.length = 0;
 	} else if (r_str_endswith (str, "!")) {
 		a->amode = !a->amode;
 		const char *src = a->otherstr? a->otherstr: "";
-		line->buffer.length = r_str_ncpy (line->buffer.data, src, sizeof (line->buffer.data));
-		line->buffer.index = line->buffer.length;
+		line->state.buffer.length = r_str_ncpy (line->state.buffer.data, src, sizeof (line->state.buffer.data));
+		line->state.buffer.index = line->state.buffer.length;
 	} else if (*str == '?') {
 		r_cons_printf (core->cons, "[VA]> ?\n\n"
 			"Visual assembler help:\n\n"
@@ -50,16 +50,24 @@ static int readline_callback(RCons *cons, void *_a, const char *str) {
 		r_asm_code_free (a->acode);
 		a->acode = r_asm_assemble (core->rasm, str);
 	} else {
-		ut8 out[1024];
-		int len = r_hex_str2bin (str, out);
-		if (len > 0 && a->acode) {
-			free (a->acode->bytes);
-			a->acode->bytes = r_mem_dup (out, len);
-			a->acode->len = len;
+		size_t len = 0;
+		ut8 *out = r_hex_str2bin_dup (str, &len);
+		if (out) {
+			if (!a->acode) {
+				a->acode = r_asm_code_new ();
+			}
+			if (a->acode) {
+				free (a->acode->bytes);
+				a->acode->bytes = out;
+				a->acode->len = (int)len;
+			} else {
+				free (out);
+			}
 		}
 		a->codebuf[0] = 0;
 	}
-	const char *hex = a->acode? r_asm_code_get_hex (a->acode): "";
+	char *hexstr = a->acode? r_asm_code_get_hex (a->acode): NULL;
+	const char *hex = r_str_get (hexstr);
 	r_cons_printf (core->cons, "[%s:%d]> %s\n",
 		a->amode? "ASM": "HEX",
 		a->acode? a->acode->len: 0, str);
@@ -88,6 +96,7 @@ static int readline_callback(RCons *cons, void *_a, const char *str) {
 	r_cons_println (core->cons, msg);
 	free (msg);
 	free (res);
+	free (hexstr);
 	r_cons_flush (core->cons);
 	return 1;
 }

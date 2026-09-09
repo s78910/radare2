@@ -778,7 +778,7 @@ typedef struct r_bin_java_obj_t {
 	RBinJavaField *entrypoint;
 	RBinJavaAttrInfo *entrypoint_code_attr;
 
-	//RList* classes_list; // TODO: Not sure if this is necessary.  it would be the inner classes info.
+	// RList* inner_classes; // TODO: Do we need this?
 	RList* fields_list;
 	RList* methods_list;
 	RList* cp_list;
@@ -801,12 +801,12 @@ R_API RBinJavaCPTypeObj* r_bin_java_get_item_from_cp(RBinJavaObj *bin, int i);
 R_API RBinJavaCPTypeObj* r_bin_java_get_item_from_bin_cp_list(RBinJavaObj *bin, ut64 idx);
 R_API ut8 * r_bin_java_cp_get_idx_bytes(RBinJavaObj *bin, ut16 idx, ut32 *out_sz);
 R_API RList * r_bin_java_get_lib_names(RBinJavaObj * bin);
-R_API RList* r_bin_java_get_sections(RBinJavaObj *bin);
+R_API bool r_bin_java_load_sections(RBinJavaObj *bin, RVecRBinSection *sections);
 R_API char* r_bin_java_get_version(RBinJavaObj* bin);
 R_API RBinAddr * r_bin_java_get_entrypoint(RBinJavaObj* bin, int sym);
 R_API RList* r_bin_java_get_entrypoints(RBinJavaObj* bin);
 R_API void r_bin_java_load_symbols(RBinJavaObj* bin, RVecRBinSymbol *vec);
-R_API RList* r_bin_java_get_strings(RBinJavaObj* bin);
+R_API RVecRBinString *r_bin_java_get_strings(RBinJavaObj* bin);
 R_API void* r_bin_java_free(RBinJavaObj* bin);
 R_API RBinJavaObj* r_bin_java_new(const char* file, ut64 baddr, Sdb * kv);
 R_API RBinJavaObj* r_bin_java_new_buf(RBuffer* buf, ut64 baddr, Sdb * kv);

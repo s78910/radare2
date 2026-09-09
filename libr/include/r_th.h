@@ -31,7 +31,14 @@
 # define HAVE_STDATOMIC_H 0
 # define R_ATOMIC_BOOL int
 
+#elif defined(__miknix__)
+# define HAVE_TH_LOCAL 1
+# define R_TH_LOCAL __thread
+# define HAVE_STDATOMIC_H 0
+# define R_ATOMIC_BOOL int
+
 #elif defined (__GNUC__) && !__TINYC__
+# define HAVE_TH_LOCAL 1
 # define R_TH_LOCAL __thread
 # define HAVE_STDATOMIC_H 0
 # define R_ATOMIC_BOOL int
@@ -65,7 +72,14 @@
 #undef HAVE_PTHREAD
 #define HAVE_PTHREAD 0
 #define R_TH_TID HANDLE
-#define R_TH_LOCK_T CRITICAL_SECTION
+typedef union {
+	CRITICAL_SECTION cs;
+	struct {
+		PVOID lock;
+		FARPROC api[3];
+	} srw;
+} RThreadLockWin;
+#define R_TH_LOCK_T RThreadLockWin
 #define R_TH_COND_T CONDITION_VARIABLE
 #define R_TH_SEM_T HANDLE
 
@@ -137,7 +151,8 @@ typedef struct r_th_sem_t {
 
 typedef enum r_th_lock_type_t {
 	R_TH_LOCK_TYPE_STATIC = 0,
-	R_TH_LOCK_TYPE_HEAP,
+	R_TH_LOCK_TYPE_HEAP = 1,
+	R_TH_LOCK_TYPE_SRW = 2,
 } RThreadLockType;
 
 typedef struct r_th_lock_t {
@@ -226,6 +241,7 @@ R_API bool r_th_is_running(RThread *th);
 R_API void *r_th_kill_free(RThread *th);
 R_API bool r_th_kill(RThread *th, bool force);
 R_API R_TH_TID r_th_self(void);
+R_API bool r_th_tid_equal(R_TH_TID a, R_TH_TID b);
 R_API bool r_th_setname(RThread *th, const char *name);
 R_API bool r_th_getname(RThread *th, char *name, size_t len);
 R_API bool r_th_setaffinity(RThread *th, int cpuid);
@@ -252,7 +268,8 @@ R_API void *r_th_lock_free(RThreadLock *thl);
 R_API RThreadCond *r_th_cond_new(void);
 R_API void r_th_cond_signal(RThreadCond *cond);
 R_API void r_th_cond_signal_all(RThreadCond *cond);
-R_API void r_th_cond_wait(RThreadCond *cond, RThreadLock *lock);
+/* timeout_ms of 0 or UT64_MAX waits forever; returns false on timeout */
+R_API bool r_th_cond_wait(RThreadCond *cond, RThreadLock *lock, ut64 timeout_ms);
 R_API void r_th_cond_free(RThreadCond *cond);
 
 R_API void r_atomic_store(volatile R_ATOMIC_BOOL *data, bool v);

@@ -59,7 +59,7 @@ typedef void * r_ptrace_data_t;
 #elif __APPLE__
 typedef int r_ptrace_request_t;
 typedef int r_ptrace_data_t;
-#elif __OpenBSD__ || __FreeBSD__
+#elif __OpenBSD__ || __FreeBSD__ || __NetBSD__
 typedef int r_ptrace_request_t;
 typedef int r_ptrace_data_t;
 #define R_PTRACE_NODATA 0
@@ -221,6 +221,7 @@ typedef struct r_io_plugin_t {
 	bool (*accept)(RIO *io, RIODesc *desc, int fd);
 	int (*create)(RIO *io, const char *file, int mode, int type);
 	bool (*check)(RIO *io, const char *, bool many);
+	const char *binuris; // comma-separated URI prefixes accepted from bin redirects
 } RIOPlugin;
 
 #define	R_IO_MAP_TIE_FLG_BACK	1		//ties a map so that it resizes when the desc resizes
@@ -266,6 +267,7 @@ typedef enum {
 typedef struct r_io_map_t {
 	int fd;
 	int perm;
+	int sperm;
 	ut32 id;
 	ut64 ts;
 	RInterval itv;
@@ -298,7 +300,8 @@ typedef struct r_io_bank_t {
 
 typedef struct r_io_region_t {
 	RInterval itv;
-	ut32 perm;
+	int perm;
+	int sperm;
 } RIORegion;
 
 R_VEC_TYPE (RVecRIORegion, RIORegion);
@@ -317,7 +320,8 @@ typedef ut64(*RIODescSize)(RIODesc *desc);
 typedef RIODesc *(*RIOOpen)(RIO *io, const char *uri, int flags, int mode);
 typedef RIODesc *(*RIOOpenAt)(RIO *io, const  char *uri, int flags, int mode, ut64 at);
 typedef bool (*RIOClose)(RIO *io, int fd);
-typedef bool (*RIOReadAt)(RIO *io, ut64 addr, ut8 *buf, int len);
+// Returns the number of bytes in the contiguous read prefix, or -1 on error.
+typedef int (*RIOReadAt)(RIO *io, ut64 addr, ut8 *buf, int len);
 typedef bool (*RIOWriteAt)(RIO *io, ut64 addr, const ut8 *buf, int len);
 typedef bool (*RIOOverlayWriteAt)(RIO *io, ut64 addr, const ut8 *buf, int len);
 typedef char *(*RIOSystem)(RIO *io, const char* cmd);
@@ -406,6 +410,9 @@ R_API RIOMap *r_io_map_add(RIO *io, int fd, int flags, ut64 delta, ut64 addr, ut
 R_API RIOMap *r_io_map_add_bottom(RIO *io, int fd, int flags, ut64 delta, ut64 addr, ut64 size);
 R_API RIOMap *r_io_map_get_at(RIO *io, ut64 vaddr); // returns the map at vaddr with the highest priority
 R_API RIOMap *r_io_map_get_by_ref(RIO *io, RIOMapRef *ref);
+R_API int r_io_map_get_perm(RIO *io, ut32 id);
+R_API int r_io_map_get_sperm(RIO *io, ut32 id);
+R_API bool r_io_map_set_perm(RIO *io, ut32 id, int perm);
 R_API bool r_io_map_is_mapped(RIO* io, ut64 addr);
 R_API RIOMap *r_io_map_get_paddr(RIO *io, ut64 paddr);		//returns the map at paddr with the highest priority
 R_API void r_io_map_reset(RIO* io);
@@ -583,6 +590,7 @@ R_API bool r_io_cache_writable(RIO *io);
 // apply patches in given buffer
 R_API bool r_io_cache_write_at(RIO *io, ut64 addr, const ut8 *buf, int len);
 R_API bool r_io_cache_read_at(RIO *io, ut64 addr, ut8 *buf, int len);
+R_IPI int r_io_cache_nread_at(RIO *io, ut64 addr, ut8 *buf, int len);
 // invalidate ranges and commit to io
 R_API int r_io_cache_invalidate(RIO *io, ut64 from, ut64 to, bool many);
 R_API void r_io_cache_commit(RIO *io, ut64 from, ut64 to, bool many);
@@ -645,9 +653,11 @@ R_API void *r_io_ptrace_func(RIO *io, void *(*func)(void *), void *user);
 #endif
 
 extern RIOPlugin r_io_plugin_procpid;
+extern RIOPlugin r_io_plugin_ebpf;
 extern RIOPlugin r_io_plugin_malloc;
 extern RIOPlugin r_io_plugin_sparse;
 extern RIOPlugin r_io_plugin_ptrace;
+extern RIOPlugin r_io_plugin_haiku;
 extern RIOPlugin r_io_plugin_w32dbg;
 extern RIOPlugin r_io_plugin_windbg;
 extern RIOPlugin r_io_plugin_mach;

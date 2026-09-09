@@ -114,10 +114,9 @@ int handle_vFile_open(libgdbr_t *g) {
 	return send_ack (g);
 }
 
-int handle_vFile_pread(libgdbr_t *g, ut8 *buf) {
+int handle_vFile_pread(libgdbr_t *g, ut8 *buf, size_t max_len) {
 	send_ack (g);
-	char *ptr;
-	int len;
+	char *ptr, *end;
 	if (g->data_len < 3 || g->data[0] != 'F') {
 		return -1;
 	}
@@ -126,24 +125,29 @@ int handle_vFile_pread(libgdbr_t *g, ut8 *buf) {
 	if (g->data[1] == '-') {
 		return 0;
 	}
-	if (!isxdigit ((unsigned char)g->data[1])) {
+	if (!isxdigit ((ut8)g->data[1])) {
 		return -1;
 	}
-	if (sscanf (g->data, "F%x;", &len) != 1) {
+	ptr = memchr (g->data + 2, ';', g->data_len - 2);
+	if (!ptr) {
+		return -1;
+	}
+	unsigned long declared_len = strtoul (g->data + 1, &end, 16);
+	if (end != ptr || declared_len > INT_MAX) {
 		return -1;
 	}
 	// Again, this is probably the end of file
-	if (len == 0) {
+	if (!declared_len) {
 		return 0;
 	}
-	if (!(ptr = strchr (g->data, ';')) || ptr >= g->data + g->data_len) {
-		return -1;
-	}
 	ptr++;
-	if (len > 0) {
-		memcpy (buf, ptr, len);
+	size_t available_len = g->data_len - (ptr - g->data);
+	size_t copy_len = R_MIN ((size_t)declared_len, max_len);
+	copy_len = R_MIN (copy_len, available_len);
+	if (copy_len > 0) {
+		memcpy (buf, ptr, copy_len);
 	}
-	return len;
+	return (int)copy_len;
 }
 
 int handle_vFile_close(libgdbr_t *g) {
@@ -173,7 +177,6 @@ static bool parse_thread_stop(const char *data, const char *prefix, int *pid, in
 static int stop_reason_death(libgdbr_t *g, bool is_signal) {
 	int value = 0, pid = g->pid;
 	bool multi = g->stub_features.multiprocess && g->data_len > 3;
-	g->stop_reason.reason = R_DEBUG_REASON_DEAD;
 	if (multi) {
 		if (sscanf (g->data + 1, "%x;process:%x", &value, &pid) != 2) {
 			R_LOG_DEBUG ("Message from remote: %s", g->data);
@@ -187,6 +190,8 @@ static int stop_reason_death(libgdbr_t *g, bool is_signal) {
 	}
 	R_LOG_DEBUG ("Process %d %s %d", pid,
 		is_signal? "terminated with signal": "exited with status", value);
+	gdbr_stop_reason_reset (&g->stop_reason);
+	g->stop_reason.reason = R_DEBUG_REASON_DEAD;
 	g->stop_reason.thread.pid = pid;
 	g->stop_reason.thread.tid = pid;
 	if (is_signal) {
@@ -208,7 +213,7 @@ int handle_stop_reason(libgdbr_t *g) {
 		if (send_ack (g) < 0) {
 			return -1;
 		}
-		memset (&g->stop_reason, 0, sizeof (libgdbr_stop_reason_t));
+		gdbr_stop_reason_reset (&g->stop_reason);
 		g->stop_reason.signum = -1;
 		g->stop_reason.reason = R_DEBUG_REASON_NONE;
 		return 0;
@@ -223,8 +228,7 @@ int handle_stop_reason(libgdbr_t *g) {
 	char *ptr1, *ptr2;
 	char *save_ptr = NULL;
 	g->data[g->data_len] = '\0';
-	R_FREE (g->stop_reason.exec.path);
-	memset (&g->stop_reason, 0, sizeof (libgdbr_stop_reason_t));
+	gdbr_stop_reason_reset (&g->stop_reason);
 	g->stop_reason.core = -1;
 	if (sscanf (g->data + 1, "%02x", &g->stop_reason.signum) != 1) {
 		return -1;
@@ -332,7 +336,7 @@ int handle_lldb_read_reg(libgdbr_t *g) {
 		}
 	}
 	tot_regs = regnum;
-	if (buflen > (size_t)g->read_max || buflen > (size_t)g->data_max) {
+	if (buflen >= (size_t)g->read_max || buflen >= (size_t)g->data_max) {
 		R_LOG_ERROR ("%s: register buffer %zu exceeds io buffers", __func__, buflen);
 		return -1;
 	}
@@ -345,7 +349,7 @@ int handle_lldb_read_reg(libgdbr_t *g) {
 		return -1;
 	}
 	while (ptr) {
-		if (isxdigit ((unsigned char)*ptr)) {
+		if (isxdigit ((ut8)*ptr)) {
 			regnum = (int) strtoul (ptr, NULL, 16);
 			if (regnum < tot_regs && (ptr2 = strchr (ptr, ':'))) {
 				const size_t roff = g->registers[regnum].offset;

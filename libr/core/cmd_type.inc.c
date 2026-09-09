@@ -120,6 +120,9 @@ static RCoreHelpMessage help_msg_te = {
 	"tee", " <name>", "edit enum with cfg.editor",
 	"tej", "", "list all loaded enums in json",
 	"tej", " <enum>", "show enum in json",
+	"ten", " <value>", "show enum type and name for given number",
+	"tenj", " <value>", "show enum type and name for given number in json",
+	"tenq", " <value>", "show enum type.name for given number",
 	"test", " [-x,f,d] [path]", "test if executable, file or directory exists",
 	"tev", " [name]", "view all/given enums in C format with member values",
 	NULL
@@ -174,6 +177,7 @@ static RCoreHelpMessage help_msg_ts = {
 	"ts*", " [type]", "show pf.<name> format string for given struct",
 	"tsc", "<name>", "list all/given loaded structs in C output format with newlines",
 	"tsd", "", "list all loaded structs in C output format without newlines",
+	"tsn", " <size>", "list all structs matching the given size",
 	"tss", " [type]", "display size of struct",
 	"tsv", " [name]", "view all/given structs in C format with field offsets",
 	NULL
@@ -206,6 +210,112 @@ static bool cc_cb(void *p, const char *k, const char *v) {
 	return true;
 }
 
+static void core_anal_cc_json_roles(PJ *pj, RAnal *anal, const char *cc) {
+	const char tags[] = "TRVEX";
+	bool opened = false;
+	int i;
+	for (i = 0; tags[i]; i++) {
+		char role[2] = { tags[i], 0 };
+		const char *loc = r_anal_cc_roleloc (anal, cc, role);
+		if (loc) {
+			if (!opened) {
+				pj_ko (pj, "roles");
+				opened = true;
+			}
+			pj_ks (pj, role, loc);
+		}
+	}
+	bool seen[26] = {0};
+	const char *p = cc;
+	while ((p = strchr (p, '!'))) {
+		char tag = p[1];
+		if (islower ((ut8)tag) && tag != 'p') {
+			int idx = tag - 'a';
+			if (!seen[idx]) {
+				seen[idx] = true;
+				char role[2] = { tag, 0 };
+				const char *loc = r_anal_cc_roleloc (anal, cc, role);
+				if (loc) {
+					if (!opened) {
+						pj_ko (pj, "roles");
+						opened = true;
+					}
+					pj_ks (pj, role, loc);
+				}
+			}
+		}
+		p++;
+	}
+	if (opened) {
+		pj_end (pj);
+	}
+}
+
+static void core_anal_cc_json(PJ *pj, RAnal *anal, const char *cc, bool include_callconv) {
+	if (!cc) {
+		return;
+	}
+	const bool is_dyncc = r_str_startswith (cc, "dyncc:");
+	if (include_callconv) {
+		pj_ks (pj, "callconv", cc);
+	}
+	const char *ret = r_anal_cc_ret (anal, cc, 0);
+	if (ret) {
+		pj_ks (pj, "ret", ret);
+	} else if (!is_dyncc) {
+		return;
+	}
+	pj_ka (pj, "rets");
+	int i;
+	for (i = 0; ; i++) {
+		const char *r = r_anal_cc_ret (anal, cc, i);
+		if (!r) {
+			break;
+		}
+		pj_s (pj, r);
+	}
+	pj_end (pj);
+	char *sig = r_anal_cc_get (anal, cc);
+	if (sig) {
+		pj_ks (pj, "signature", sig);
+		free (sig);
+	}
+	const int max = r_anal_cc_max_arg (anal, cc);
+	pj_ka (pj, "args");
+	for (i = 0; i < max; i++) {
+		pj_s (pj, r_anal_cc_argloc (anal, cc, i, 0, -1));
+	}
+	pj_end (pj);
+	if (is_dyncc) {
+		pj_ka (pj, "arg_homes");
+		for (i = 0; i < max; i++) {
+			pj_a (pj);
+			int home;
+			for (home = 0; ; home++) {
+				const char *arg = r_anal_cc_argloc (anal, cc, i, home, -1);
+				if (!arg) {
+					break;
+				}
+				pj_s (pj, arg);
+			}
+			pj_end (pj);
+		}
+		pj_end (pj);
+	}
+	const char *argn = r_anal_cc_argloc (anal, cc, max, 0, -1);
+	if (argn) {
+		pj_ks (pj, "argn", argn);
+	}
+	if (is_dyncc) {
+		core_anal_cc_json_roles (pj, anal, cc);
+	} else {
+		const char *error = r_anal_cc_roleloc (anal, cc, "error");
+		if (error) {
+			pj_ks (pj, "error", error);
+		}
+	}
+}
+
 static void cmd_afcl(RCore *core, const char *input) {
 	int mode = 0;
 	PJ *pj = NULL;
@@ -224,7 +334,7 @@ static void cmd_afcl(RCore *core, const char *input) {
 	r_list_foreach (list, iter, cc) {
 		if (pj) {
 			pj_ko (pj, cc);
-			r_anal_cc_get_json (core->anal, pj, cc);
+			core_anal_cc_json (pj, core->anal, cc, false);
 			pj_end (pj);
 		} else if (mode == 'l') {
 			char *sig = r_anal_cc_get (core->anal, cc);
@@ -259,17 +369,17 @@ static void cmd_afck(RCore *core, const char *c) {
 static void cmd_tcc(RCore *core, const char *input) {
 	switch (*input) {
 	case '?':
-		r_core_cmd_help (core, help_msg_tcc);
+		r_cons_cmd_help (core->cons, help_msg_tcc);
 		break;
 	case '-':
 		if (input[1] == '*') {
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_tcc, "tcc-*");
+				r_cons_cmd_help_match (core->cons, help_msg_tcc, "tcc-*", 0, true);
 			} else {
 				sdb_reset (core->anal->sdb_cc);
 			}
 		} else if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_tcc, "tcc-");
+			r_cons_cmd_help_match (core->cons, help_msg_tcc, "tcc-", 0, false);
 		} else {
 			r_anal_cc_del (core->anal, r_str_trim_head_ro (input + 1));
 		}
@@ -279,14 +389,14 @@ static void cmd_tcc(RCore *core, const char *input) {
 	case 'j':
 	case '*':
 		if (*input && input[1] == '?') {
-			r_core_cmd_help_match_spec (core, help_msg_tcc, "tcc", *input);
+			r_cons_cmd_help_match (core->cons, help_msg_tcc, "tcc", *input, true);
 		} else {
 			cmd_afcl (core, input);
 		}
 		break;
 	case 'k':
 		if (input[1] == '?') {
-			r_core_cmd_help_match (core, help_msg_tcc, "tcck");
+			r_cons_cmd_help_match (core->cons, help_msg_tcc, "tcck", 0, true);
 		} else {
 			cmd_afck (core, NULL);
 		}
@@ -308,12 +418,17 @@ static void cmd_tcc(RCore *core, const char *input) {
 	}
 }
 
+// byte width of a type, falling back for the sizeless ones the sdb cannot resolve
+static ut32 type_bytesize(RAnal *anal, const char *type, ut32 fallback) {
+	const ut32 size = r_anal_type_bitsize (anal, type) / 8;
+	return size? size: fallback;
+}
+
 static void add_type_fields_to_json(RCore *core, PJ *pj, const char *struct_name, const char *type_name) {
 	const bool is_union = !strcmp (type_name, "union");
 	// Get struct members list
-	char *members_query = r_str_newf ("%s.%s", type_name, struct_name);
-	char *members = sdb_get (core->anal->sdb_types, members_query, 0);
-	free (members_query);
+	const char *value = sdb_const_getf (core->anal->sdb_types, NULL, "%s.%s", type_name, struct_name);
+	char *members = value? strdup (value): NULL;
 	if (!members) {
 		return;
 	}
@@ -328,9 +443,8 @@ static void add_type_fields_to_json(RCore *core, PJ *pj, const char *struct_name
 		if (!member_name || R_STR_ISEMPTY (member_name)) {
 			continue;
 		}
-		char *member_query = r_str_newf ("%s.%s.%s", type_name, struct_name, member_name);
-		char *member_details = sdb_get (core->anal->sdb_types, member_query, 0);
-		free (member_query);
+		value = sdb_const_getf (core->anal->sdb_types, NULL, "%s.%s.%s", type_name, struct_name, member_name);
+		char *member_details = value? strdup (value): NULL;
 		if (!member_details) {
 			continue;
 		}
@@ -340,17 +454,7 @@ static void add_type_fields_to_json(RCore *core, PJ *pj, const char *struct_name
 			const char *arr_size_str = r_str_word_get0 (member_details, 2);
 			ut32 arr_size = r_num_get (NULL, arr_size_str);
 			arr_size = arr_size ? arr_size : 1;
-			ut32 type_size;
-			if (strchr (type, '*')) {
-				type_size = core->anal->config->bits / 8;
-			} else {
-				ut64 type_bits = r_type_get_bitsize (core->anal->sdb_types, type);
-				type_size = type_bits / 8;
-				if (type_size == 0) {
-					type_size = 1;
-				}
-			}
-			ut32 size = type_size * arr_size;
+			ut32 size = type_bytesize (core->anal, type, 1) * arr_size;
 			pj_o (pj);
 			pj_ks (pj, "name", member_name);
 			pj_ks (pj, "type", type);
@@ -440,7 +544,7 @@ static int cmd_tac(void *data, const char *_input) { // "tac"
 	}
 	switch (*input) {
 	case '?': // "tac?"
-		r_core_cmd_help_match (core, help_msg_t, "tac");
+		r_cons_cmd_help_match (core->cons, help_msg_t, "tac", 0, true);
 		break;
 	default: // "tac"
 		if (R_STR_ISNOTEMPTY (arg)) {
@@ -458,7 +562,7 @@ static int cmd_tac(void *data, const char *_input) { // "tac"
 				R_LOG_ERROR ("File not found");
 			}
 		} else {
-			r_core_cmd_help_match (core, help_msg_t, "tac");
+			r_cons_cmd_help_match (core->cons, help_msg_t, "tac", 0, true);
 		}
 		break;
 	}
@@ -488,7 +592,7 @@ static int cmd_tail(void *data, const char *_input) { // "tail"
 	}
 	switch (*input) {
 	case '?': // "tail?"
-		r_core_cmd_help_match (core, help_msg_t, "tail");
+		r_cons_cmd_help_match (core->cons, help_msg_t, "tail", 0, true);
 		break;
 	default: // "tail"
 		if (!arg) {
@@ -545,7 +649,7 @@ static void cmd_type_noreturn(RCore *core, const char *input) {
 			r_anal_noreturn_add (core->anal, NULL,
 					r_num_math (core->num, input + 1));
 		} else {
-			r_core_cmd_help (core, help_msg_tn);
+			r_cons_cmd_help (core->cons, help_msg_tn);
 		}
 		break;
 	case 'n': // "tnn"
@@ -553,7 +657,7 @@ static void cmd_type_noreturn(RCore *core, const char *input) {
 			/* do nothing? */
 			r_anal_noreturn_add (core->anal, r_str_trim_head_ro (input + 2), UT64_MAX);
 		} else {
-			r_core_cmd_help (core, help_msg_tn);
+			r_cons_cmd_help (core->cons, help_msg_tn);
 		}
 		break;
 	case '*':
@@ -565,7 +669,7 @@ static void cmd_type_noreturn(RCore *core, const char *input) {
 		break;
 	default:
 	case '?':
-		r_core_cmd_help (core, help_msg_tn);
+		r_cons_cmd_help (core->cons, help_msg_tn);
 		break;
 	}
 }
@@ -581,7 +685,7 @@ static void cmd_type_edit(RCore *core, const char *typename, const char *c_cmd) 
 		free (str);
 		return;
 	}
-	char *tmp = r_core_editor (core, "*.h", str);
+	char *tmp = r_core_editor (core, "*.h", str, NULL);
 	if (tmp) {
 		r_str_trim (tmp);
 		char *str_trimmed = strdup (str);
@@ -611,9 +715,7 @@ static bool stdifstruct(void *user, const char *k, const char *v) {
 		return true;
 	}
 	if (!strcmp (v, "typedef")) {
-		char *typedef_key = r_str_newf ("typedef.%s", k);
-		const char *type = sdb_const_get (TDB, typedef_key, NULL);
-		free (typedef_key);
+		const char *type = sdb_const_getf (TDB, NULL, "typedef.%s", k);
 		if (type && r_str_startswith (type, "struct")) {
 			return true;
 		}
@@ -710,6 +812,36 @@ static int print_struct_union_list_json(RCore *core, Sdb *TDB, SdbForeachCallbac
 	return 1;
 }
 
+static ut64 struct_type_size(RAnal *anal, const char *name, const char *kind) {
+	if (!strcmp (kind, "typedef")) {
+		const char *type = sdb_const_getf (anal->sdb_types, NULL, "typedef.%s", name);
+		if (R_STR_ISNOTEMPTY (type)) {
+			return r_anal_type_bitsize (anal, type) / 8;
+		}
+	}
+	return r_anal_type_bitsize (anal, name) / 8;
+}
+
+static void print_structs_by_size(RCore *core, Sdb *TDB, ut64 size) {
+	SdbList *l = sdb_foreach_list_filter (TDB, stdifstruct, true);
+	if (!l) {
+		return;
+	}
+	SdbListIter *it;
+	SdbKv *kv;
+	ls_foreach (l, it, kv) {
+		const char *name = sdbkv_key (kv);
+		const char *kind = sdbkv_value (kv);
+		if (R_STR_ISEMPTY (name) || !kind) {
+			continue;
+		}
+		if (struct_type_size (core->anal, name, kind) == size) {
+			r_cons_println (core->cons, name);
+		}
+	}
+	ls_free (l);
+}
+
 // Rename to char *RAnal.type_to_c() {}
 static void print_struct_union_in_c_format(RCore *core, Sdb *TDB, SdbForeachCallback filter, const char *arg, bool multiline) {
 	char *name = NULL;
@@ -736,15 +868,38 @@ static void print_struct_union_in_c_format(RCore *core, Sdb *TDB, SdbForeachCall
 			}
 		}
 		r_strbuf_appendf (sb, "%s %s {%s", sdbkv_value (kv), name, multiline? "\n": "");
+		const bool is_struct = !strcmp (sdbkv_value (kv), "struct");
+		const int ptr_size = R_MAX (1, (int)core->anal->config->bits / 8);
+		ut64 run = 0;
 		char *p, *var = r_str_newf ("%s.%s", sdbkv_value (kv), name);
 		for (n = 0; (p = sdb_array_get (TDB, var, n, NULL)); n++) {
 			char *var2 = r_str_newf ("%s.%s", var, p);
 			if (var2) {
-				char *val = sdb_array_get (TDB, var2, 0, NULL);
+				ut64 moff = 0;
+				int arrnum = 0;
+				char *val = r_type_get_member (TDB, var2, &moff, &arrnum);
 				if (val) {
-					char *arr = sdb_array_get (TDB, var2, 2, NULL);
-					int arrnum = arr? atoi (arr): 0;
-					free (arr);
+					if (is_struct) {
+						// function-pointer members store a func alias as their type; the parser lays them out as pointers
+						const char *tv = sdb_const_get (TDB, val, 0);
+						const bool is_fptr = tv && !strcmp (tv, "func");
+						const int av = is_fptr? ptr_size: r_anal_cparse_typealign (val, ptr_size);
+						ut64 natural = run;
+						if (av > 1 && (natural % av)) {
+							natural += av - (natural % av);
+						}
+						// pad only gaps that natural alignment cannot reproduce on re-parse
+						if (moff > run && moff != natural && !(moff % av)) {
+							if (multiline) {
+								r_strbuf_appendf (sb, "  uint8_t pad_0x%" PFMT64x "[%" PFMT64u "]; // gap\n", run, moff - run);
+							} else {
+								r_strbuf_appendf (sb, "%suint8_t pad_0x%" PFMT64x "[%" PFMT64u "];", space, run, moff - run);
+								space = " ";
+							}
+						}
+						const ut64 mb = is_fptr? ptr_size: r_anal_cparse_typesize (val, arrnum > 0? arrnum: 1, ptr_size);
+						run = R_MAX (run, moff + mb); // monotonic: overlapping members never force a pad
+					}
 					// Check for metadata attributes for this field
 					RStrBuf *attrs_sb = r_strbuf_new ("");
 					SdbList *all_keys = sdb_foreach_list (TDB, true);
@@ -1004,23 +1159,12 @@ static void print_struct_union_with_offsets(RCore *core, Sdb *TDB, SdbForeachCal
 		for (n = 0; (p = sdb_array_get (TDB, var, n, NULL)); n++) {
 			char *var2 = r_str_newf ("%s.%s", var, p);
 			if (var2) {
-				char *val = sdb_array_get (TDB, var2, 0, NULL);
+				ut64 moff = 0;
+				int arrnum = 0;
+				char *val = r_type_get_member (TDB, var2, &moff, &arrnum);
 				if (val) {
-					char *arr = sdb_array_get (TDB, var2, 2, NULL);
-					int arrnum = arr? atoi (arr): 0;
-					free (arr);
-					ut32 type_size;
-					if (strchr (val, '*')) {
-						type_size = core->anal->config->bits / 8;
-					} else {
-						ut64 type_bits = r_type_get_bitsize (TDB, val);
-						type_size = type_bits / 8;
-						if (type_size == 0) {
-							type_size = 1;
-						}
-					}
 					ut32 arr_size = arrnum ? arrnum : 1;
-					ut32 size = type_size * arr_size;
+					ut32 size = type_bytesize (core->anal, val, 1) * arr_size;
 					r_strbuf_appendf (sb, "%s0x%08x%s   %s%s%s", color_addr, current_offset, color_reset, color_type, val, color_reset);
 					if (p && p[0] != '\0') {
 						r_strbuf_appendf (sb, "%s%s%s%s", strstr (val, " *")? "": " ", color_name, p, color_reset);
@@ -1157,9 +1301,7 @@ static void print_basic_type_with_offsets(RCore *core, Sdb *TDB, const char *arg
 				continue;
 			}
 		}
-		char *size_key = r_str_newf ("type.%s.size", name);
-		const char *size_str = sdb_const_get (TDB, size_key, NULL);
-		free (size_key);
+		const char *size_str = sdb_const_getf (TDB, NULL, "type.%s.size", name);
 		ut32 size = size_str ? (ut32)(atoi (size_str) / 8) : 0;
 		if (show_xrefs) {
 			RList *type_xrefs = collect_type_xrefs (core, name);
@@ -1242,7 +1384,6 @@ static void print_func_with_offsets(RCore *core, Sdb *TDB, const char *arg) {
 	}
 
 	RStrBuf *sb = r_strbuf_new ("");
-	r_strf_buffer (256);
 
 	ls_foreach (l, iter, kv) {
 		const char *name = sdbkv_key (kv);
@@ -1254,12 +1395,12 @@ static void print_func_with_offsets(RCore *core, Sdb *TDB, const char *arg) {
 			}
 		}
 
-		int args = sdb_num_get (TDB, r_strf ("func.%s.args", name), 0);
-		const char *ret = sdb_const_get (TDB, r_strf ("func.%s.ret", name), 0);
+		int args = sdb_num_getf (TDB, NULL, "func.%s.args", name);
+		const char *ret = sdb_const_getf (TDB, NULL, "func.%s.ret", name);
 		if (!ret) {
 			ret = "void";
 		}
-		const char *cc = sdb_const_get (TDB, r_strf ("func.%s.cc", name), 0);
+		const char *cc = sdb_const_getf (TDB, NULL, "func.%s.cc", name);
 		if (!cc) {
 			cc = r_anal_cc_default (core->anal);
 			if (!cc) {
@@ -1282,7 +1423,7 @@ static void print_func_with_offsets(RCore *core, Sdb *TDB, const char *arg) {
 			r_list_free (func_xrefs);
 		}
 
-		const char *ret_reg = r_anal_cc_ret (core->anal, cc);
+		const char *ret_reg = r_anal_cc_ret (core->anal, cc, 0);
 		r_strbuf_appendf (sb, "%s0x%08x%s %s%s%s %s%s%s ( %s// cc:%s ret:%s%s\n",
 			color_addr, 0, color_reset,
 			color_type, ret, color_reset, color_name, name, color_reset,
@@ -1292,7 +1433,8 @@ static void print_func_with_offsets(RCore *core, Sdb *TDB, const char *arg) {
 		int max_cc_args = cc ? r_anal_cc_max_arg (core->anal, cc) : 0;
 		ut32 current_offset = 0;
 		for (i = 0; i < args; i++) {
-			char *type = sdb_get (TDB, r_strf ("func.%s.arg.%d", name, i), 0);
+			const char *value = sdb_const_getf (TDB, NULL, "func.%s.arg.%d", name, i);
+			char *type = value? strdup (value): NULL;
 			if (!type) {
 				continue;
 			}
@@ -1303,29 +1445,21 @@ static void print_func_with_offsets(RCore *core, Sdb *TDB, const char *arg) {
 
 			const char *arg_loc = NULL;
 			if (cc && i < max_cc_args) {
-				arg_loc = r_anal_cc_arg (core->anal, cc, i, args);
+				arg_loc = r_anal_cc_argloc (core->anal, cc, i, 0, args);
 			}
 			if (!arg_loc) {
 				arg_loc = "stack";
 			}
 
 			ut32 type_size;
-			if (!strcmp (type, "...")) {
-				r_strbuf_appendf (sb, "%s0x%08x%s   %s%s%s%s // %s%s\n",
+			if (r_type_arg_is_vararg (type, argname)) {
+				r_strbuf_appendf (sb, "%s0x%08x%s   %s...%s%s // %s%s\n",
 					color_addr, current_offset, color_reset,
-					color_type, type, color_reset,
+					color_type, color_reset,
 					color_comment, "varargs", color_reset);
 				type_size = 0;
 			} else {
-				if (strchr (type, '*')) {
-					type_size = core->anal->config->bits / 8;
-				} else {
-					ut64 type_bits = r_type_get_bitsize (TDB, type);
-					type_size = type_bits / 8;
-					if (type_size == 0) {
-						type_size = core->anal->config->bits / 8;
-					}
-				}
+				type_size = type_bytesize (core->anal, type, core->anal->config->bits / 8);
 				r_strbuf_appendf (sb, "%s0x%08x%s   %s%s%s %s%s%s%s // %s%s\n",
 					color_addr, current_offset, color_reset,
 					color_type, type, color_reset,
@@ -1336,7 +1470,8 @@ static void print_func_with_offsets(RCore *core, Sdb *TDB, const char *arg) {
 			free (type);
 		}
 
-		const char *err_reg = cc ? r_anal_cc_error (core->anal, cc) : NULL;
+		const char *err_reg = cc ? r_anal_cc_roleloc (core->anal, cc,
+			r_str_startswith (cc, "dyncc:")? "E": "error") : NULL;
 		if (err_reg) {
 			r_strbuf_appendf (sb, "%s0x%08x%s   %s// error: %s%s\n",
 				color_addr, current_offset, color_reset, color_comment, err_reg, color_reset);
@@ -1371,9 +1506,7 @@ static void print_type_view(RCore *core, const char *arg) {
 			} else if (!strcmp (type_kind, "func")) {
 				print_func_with_offsets (core, TDB, arg);
 			} else if (!strcmp (type_kind, "typedef")) {
-				char *typedef_key = r_str_newf ("typedef.%s", arg);
-				const char *real_type = sdb_const_get (TDB, typedef_key, NULL);
-				free (typedef_key);
+				const char *real_type = sdb_const_getf (TDB, NULL, "typedef.%s", arg);
 				if (real_type) {
 					print_type_view (core, real_type);
 				}
@@ -1437,6 +1570,54 @@ static void print_enum_list_json(RCore *core, Sdb *TDB, const char *name) {
 	pj_free (pj);
 }
 
+static void print_enum_by_num(RCore *core, Sdb *TDB, ut64 value, char mode) {
+	PJ *pj = NULL;
+	if (mode == 'j') {
+		pj = r_core_pj_new (core);
+		pj_a (pj);
+	}
+	SdbList *l = sdb_foreach_list (TDB, true);
+	if (l) {
+		SdbKv *kv;
+		SdbListIter *iter;
+		ls_foreach (l, iter, kv) {
+			if (strcmp (sdbkv_value (kv), "enum")) {
+				continue;
+			}
+			const char *enum_name = sdbkv_key (kv);
+			RList *list = r_type_get_enum (TDB, enum_name);
+			if (list) {
+				RListIter *miter;
+				RTypeEnum *member;
+				r_list_foreach (list, miter, member) {
+					ut64 member_value = r_num_math (core->num, member->val);
+					if (member_value != value) {
+						continue;
+					}
+					if (mode == 'j') {
+						pj_o (pj);
+						pj_ks (pj, "type", enum_name);
+						pj_ks (pj, "name", member->name);
+						pj_kn (pj, "value", member_value);
+						pj_end (pj);
+					} else if (mode == 'q') {
+						r_cons_printf (core->cons, "%s.%s\n", enum_name, member->name);
+					} else {
+						r_cons_printf (core->cons, "%s.%s = %s\n", enum_name, member->name, member->val);
+					}
+				}
+				r_list_free (list);
+			}
+		}
+		ls_free (l);
+	}
+	if (pj) {
+		pj_end (pj);
+		r_cons_printf (core->cons, "%s\n", pj_string (pj));
+		pj_free (pj);
+	}
+}
+
 static void print_enum_in_c_format(RCore *core, Sdb *TDB, const char *arg, bool multiline) {
 	char *name = NULL;
 	SdbKv *kv;
@@ -1493,8 +1674,8 @@ static void printFunctionTypeC(RCore *core, const char *input) {
 	r_strf_buffer (256);
 	char *res = sdb_querys (TDB, NULL, -1, r_strf ("func.%s.args", input));
 	const char *name = r_str_trim_head_ro (input);
-	int i, args = sdb_num_get (TDB, r_strf ("func.%s.args", name), 0);
-	const char *ret = sdb_const_get (TDB, r_strf ("func.%s.ret", name), 0);
+	int i, args = sdb_num_getf (TDB, NULL, "func.%s.args", name);
+	const char *ret = sdb_const_getf (TDB, NULL, "func.%s.ret", name);
 	if (!ret) {
 		ret = "void";
 	}
@@ -1505,7 +1686,8 @@ static void printFunctionTypeC(RCore *core, const char *input) {
 
 	r_cons_printf (core->cons, "%s %s (", ret, name);
 	for (i = 0; i < args; i++) {
-		char *type = sdb_get (TDB, r_strf ("func.%s.arg.%d", name, i), 0);
+		const char *value = sdb_const_getf (TDB, NULL, "func.%s.arg.%d", name, i);
+		char *type = value? strdup (value): NULL;
 		if (!type) {
 			continue;
 		}
@@ -1513,8 +1695,8 @@ static void printFunctionTypeC(RCore *core, const char *input) {
 		if (argname) {
 			*argname++ = 0;
 		}
-		if (!strcmp (type, "...")) {
-			r_cons_printf (core->cons, "%s%s", (i == 0)? "": ", ", type);
+		if (r_type_arg_is_vararg (type, argname)) {
+			r_cons_printf (core->cons, "%s...", (i == 0)? "": ", ");
 		} else {
 			r_cons_printf (core->cons, "%s%s %s", (i == 0)? "": ", ", type, argname);
 		}
@@ -1533,11 +1715,10 @@ static void printFunctionTypeJson(TypePrintCtx *ctx, const char *input) {
 	RCore *core = ctx->core;
 	Sdb *tdb = core->anal->sdb_types;
 	PJ *pj = ctx->pj;
-	r_strf_buffer (256);
 	const char *name = r_str_trim_head_ro (input);
-	int i, args = sdb_num_get (tdb, r_strf ("func.%s.args", name), 0);
-	const char *ret = sdb_const_get (tdb, r_strf ("func.%s.ret", name), 0);
-	const char *cc = sdb_const_get (tdb, r_strf ("func.%s.cc", name), 0);
+	int i, args = sdb_num_getf (tdb, NULL, "func.%s.args", name);
+	const char *ret = sdb_const_getf (tdb, NULL, "func.%s.ret", name);
+	const char *cc = sdb_const_getf (tdb, NULL, "func.%s.cc", name);
 	if (!ret) {
 		ret = "void";
 	}
@@ -1545,8 +1726,9 @@ static void printFunctionTypeJson(TypePrintCtx *ctx, const char *input) {
 		cc = r_anal_cc_default (core->anal);
 	}
 	int max_cc_args = cc ? r_anal_cc_max_arg (core->anal, cc) : 0;
-	const char *ret_reg = cc? r_anal_cc_ret (core->anal, cc): NULL;
-	const char *err_reg = cc ? r_anal_cc_error (core->anal, cc) : NULL;
+	const char *ret_reg = cc? r_anal_cc_ret (core->anal, cc, 0): NULL;
+	const char *err_reg = cc ? r_anal_cc_roleloc (core->anal, cc,
+		r_str_startswith (cc, "dyncc:")? "E": "error") : NULL;
 
 	pj_o (pj);
 	pj_ks (pj, "name", name);
@@ -1563,7 +1745,8 @@ static void printFunctionTypeJson(TypePrintCtx *ctx, const char *input) {
 	pj_ka (pj, "args");
 	ut32 current_offset = 0;
 	for (i = 0; i < args; i++) {
-		char *type = sdb_get (tdb, r_strf ("func.%s.arg.%d", name, i), 0);
+		const char *value = sdb_const_getf (tdb, NULL, "func.%s.arg.%d", name, i);
+		char *type = value? strdup (value): NULL;
 		if (type) {
 			char *argname = strchr (type, ',');
 			if (argname) {
@@ -1571,26 +1754,19 @@ static void printFunctionTypeJson(TypePrintCtx *ctx, const char *input) {
 			}
 			const char *arg_loc = NULL;
 			if (cc && i < max_cc_args) {
-				arg_loc = r_anal_cc_arg (core->anal, cc, i, args);
+				arg_loc = r_anal_cc_argloc (core->anal, cc, i, 0, args);
 			}
 			if (!arg_loc) {
 				arg_loc = "stack";
 			}
 			ut32 type_size = 0;
-			if (strcmp (type, "...")) {
-				if (strchr (type, '*')) {
-					type_size = core->anal->config->bits / 8;
-				} else {
-					ut64 type_bits = r_type_get_bitsize (tdb, type);
-					type_size = type_bits / 8;
-					if (type_size == 0) {
-						type_size = core->anal->config->bits / 8;
-					}
-				}
+			const bool vararg = r_type_arg_is_vararg (type, argname);
+			if (!vararg) {
+				type_size = type_bytesize (core->anal, type, core->anal->config->bits / 8);
 			}
 			pj_o (pj);
-			pj_ks (pj, "type", type);
-			if (strcmp (type, "...")) {
+			pj_ks (pj, "type", vararg? "...": type);
+			if (!vararg) {
 				pj_ks (pj, "name", argname ? argname : "(null)");
 				pj_kn (pj, "size", type_size);
 			}
@@ -1703,21 +1879,17 @@ static bool print_typelist_json_cb(void *p, const char *k, const char *v) {
 	}
 	pj_o (pj);
 	Sdb *sdb = core->anal->sdb_types;
-	char *sizecmd = r_str_newf ("type.%s.size", k);
-	char *size_s = sdb_get (sdb, sizecmd, NULL);
-	char *formatcmd = r_str_newf ("type.%s", k);
+	const char *size_s = sdb_const_getf (sdb, NULL, "type.%s.size", k);
 	pj_ks (pj, "type", k);
 	pj_ki (pj, "size", size_s ? atoi (size_s) : -1);
-	char *format_s = sdb_get (sdb, formatcmd, NULL);
+	const char *value = sdb_const_getf (sdb, NULL, "type.%s", k);
+	char *format_s = value? strdup (value): NULL;
 	if (format_s) {
 		r_str_trim (format_s);
 		pj_ks (pj, "format", format_s);
 		free (format_s);
 	}
 	pj_end (pj);
-	free (size_s);
-	free (sizecmd);
-	free (formatcmd);
 	return true;
 }
 
@@ -1779,11 +1951,9 @@ static void set_offset_hint(RCore *core, RAnalOp *op, const char *type, ut64 lad
 	const char *cmt = ((offimm == 0) && res)? res: type;
 	if (offimm > 0) {
 		// set hint only if link is present
-		char* query = r_str_newf ("link.%08"PFMT64x, laddr);
-		if (res && sdb_const_get (core->anal->sdb_types, query, 0)) {
+		if (res && sdb_const_getf (core->anal->sdb_types, NULL, "link.%08" PFMT64x, laddr)) {
 			r_anal_hint_set_offset (core->anal, at, res);
 		}
-		free (query);
 	} else if (cmt && r_anal_op_ismemref (op->type)) {
 		r_meta_set_string (core->anal, R_META_TYPE_VARTYPE, at, cmt);
 	}
@@ -1817,7 +1987,7 @@ R_API int r_core_get_stacksz(RCore *core, ut64 from, ut64 to) {
 	return maxstack;
 }
 
-static void set_retval(RCore *core, ut64 at) {
+static void set_retval(RCore *core, RReg *reg, ut64 at) {
 	RAnal *anal = core->anal;
 	RAnalHint *hint = r_anal_hint_get (anal, at);
 	RAnalFunction *fcn = r_anal_get_fcn_in (anal, at, 0);
@@ -1829,16 +1999,46 @@ static void set_retval(RCore *core, ut64 at) {
 		goto beach;
 	}
 	const char *cc = r_anal_cc_func (core->anal, fcn->name);
-	const char *regname = r_anal_cc_ret (anal, cc);
+	const char *regname = r_anal_cc_ret (anal, cc, 0);
 	if (regname) {
-		RRegItem *reg = r_reg_get (anal->reg, regname, -1);
-		if (reg) {
-			r_reg_set_value (anal->reg, reg, hint->ret);
-		}
+		r_reg_setv (reg, regname, hint->ret);
 	}
 beach:
 	r_anal_hint_free (hint);
 	return;
+}
+
+static int link_stroff_stack_new(RCore *core, RReg *reg) {
+	ut64 size = r_config_get_i (core->config, "esil.stack.size");
+	ut64 addr = r_config_get_i (core->config, "esil.stack.addr");
+	const ut64 esaddr = addr;
+	const ut64 mapinc = r_config_get_i (core->config, "io.mapinc");
+	if (!r_io_map_locate (core->io, &addr, size, esaddr) || addr != esaddr) {
+		addr = esaddr;
+		if (!r_io_map_locate (core->io, &addr, size, mapinc)) {
+			addr = 0;
+			if (!r_io_map_locate (core->io, &addr, size, mapinc)) {
+				return -1;
+			}
+		}
+	}
+	char *uri = r_str_newf ("malloc://0x%" PFMT64x, size);
+	if (!uri) {
+		return -1;
+	}
+	int fd = r_io_fd_open (core->io, uri, R_PERM_RW, 0);
+	free (uri);
+	if (fd < 0) {
+		return -1;
+	}
+	if (!r_io_map_add (core->io, fd, R_PERM_RW, 0, addr, size)) {
+		r_io_fd_close (core->io, fd);
+		return -1;
+	}
+	const ut64 sp = addr + (size / 2);
+	r_reg_setv (reg, "SP", sp);
+	r_reg_setv (reg, "BP", sp);
+	return fd;
 }
 
 R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn) {
@@ -1849,18 +2049,24 @@ R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn) {
 	RListIter *it;
 	RAnalOp aop = {0};
 	bool ioCache = r_config_get_b (core->config, "io.cache");
-	bool stack_set = false;
+	int stack_fd = -1;
 	bool resolved = false;
 	const char *varpfx;
 	int dbg_follow = r_config_get_i (core->config, "dbg.follow");
 	Sdb *TDB = core->anal->sdb_types;
-	int iotrap = r_config_get_i (core->config, "esil.iotrap");
-	int stacksize = r_config_get_i (core->config, "esil.stack.depth");
-	unsigned int addrsize = r_config_get_i (core->config, "esil.addr.size");
-	RRegItem *pc = r_reg_get (core->anal->reg, "PC", -1);
+	RReg *reg = r_reg_clone (core->anal->reg);
+	if (!reg) {
+		return;
+	}
 
-	REsil *esil = r_esil_new (stacksize, iotrap, addrsize);
+	REsilOptions opt = r_esil_options (NULL, NULL);
+	opt.stacksize = r_config_get_i (core->config, "esil.stack.depth");
+	opt.iotrap = r_config_get_i (core->config, "esil.iotrap");
+	opt.addrsize = r_config_get_i (core->config, "esil.addr.size");
+	opt.ifaces.reg.reg = reg;
+	REsil *esil = r_esil_new (&opt);
 	if (!esil) {
+		r_reg_free (reg);
 		return;
 	}
 	r_esil_setup (esil, core->anal, 0, 0, 0);
@@ -1872,24 +2078,20 @@ R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn) {
 	if (!buf) {
 		free (buf);
 		r_esil_free (esil);
+		r_reg_free (reg);
 		return;
 	}
-	r_reg_arena_push (core->anal->reg);
-	r_debug_reg_sync (core->dbg, R_REG_TYPE_ALL, true);
-	ut64 spval = r_reg_getv (esil->anal->reg, "SP");
+	ut64 spval = r_reg_getv (reg, "SP");
 	if (spval) {
 		// reset stack pointer to initial value
-		RRegItem *sp = r_reg_get (esil->anal->reg, "SP", -1);
-		ut64 curpc = r_reg_getv (esil->anal->reg, "PC");
+		ut64 curpc = r_reg_getv (reg, "PC");
 		int stacksz = r_core_get_stacksz (core, fcn->addr, curpc);
 		if (stacksz > 0) {
-			r_reg_arena_zero (esil->anal->reg); // clear prev reg values
-			r_reg_set_value (esil->anal->reg, sp, spval + stacksz);
+			r_reg_arena_zero (reg); // clear prev reg values
+			r_reg_setv (reg, "SP", spval + stacksz);
 		}
 	} else {
-		// initialize stack
-		r_core_call (core, "aeim");
-		stack_set = true;
+		stack_fd = link_stroff_stack_new (core, reg);
 	}
 	r_config_set_b (core->config, "io.cache", true);
 	r_config_set_i (core->config, "dbg.follow", 0);
@@ -1900,7 +2102,7 @@ R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn) {
 	r_list_foreach (fcn->bbs, it, bb) {
 		ut64 at = bb->addr;
 		ut64 to = bb->addr + bb->size;
-		r_reg_set_value (esil->anal->reg, pc, at);
+		r_reg_setv (reg, "PC", at);
 		for (i = 0; at < to; i++) {
 			if (r_cons_is_breaked (core->cons)) {
 				goto beach;
@@ -1914,7 +2116,8 @@ R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn) {
 			if (!i) {
 				r_io_read_at (core->io, at, buf, bsize);
 			}
-			ret = r_anal_op (core->anal, &aop, at, buf + i, bsize - i, R_ARCH_OP_MASK_VAL);
+			ret = r_anal_op (core->anal, &aop, at, buf + i, bsize - i,
+				R_ARCH_OP_MASK_VAL | R_ARCH_OP_MASK_ESIL | R_ARCH_OP_MASK_HINT);
 			if (ret <= 0) {
 				i += minopcode;
 				at += minopcode;
@@ -1925,7 +2128,7 @@ R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn) {
 			at += ret;
 			int index = 0;
 			if (aop.ireg) {
-				index = r_reg_getv (esil->anal->reg, aop.ireg) * aop.scale;
+				index = r_reg_getv (reg, aop.ireg) * aop.scale;
 			}
 			int src_imm = -1, dst_imm = -1;
 			ut64 src_addr = UT64_MAX;
@@ -1933,13 +2136,13 @@ R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn) {
 			RAnalValue *src = NULL;
 			R_VEC_FOREACH (&aop.srcs, src) {
 				if (src && src->reg) {
-					src_addr = r_reg_getv (esil->anal->reg, src->reg) + index;
+					src_addr = r_reg_getv (reg, src->reg) + index;
 					src_imm = src->delta;
 				}
 			}
 			RAnalValue *dst = RVecRArchValue_at (&aop.dsts, 0);
 			if (dst && dst->reg) {
-				dst_addr = r_reg_getv (esil->anal->reg, dst->reg) + index;
+				dst_addr = r_reg_getv (reg, dst->reg) + index;
 				dst_imm = dst->delta;
 			}
 			RAnalVar *var = r_anal_get_used_function_var (core->anal, aop.addr);
@@ -1970,11 +2173,16 @@ R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn) {
 			} else if (dlink) {
 				set_offset_hint (core, &aop, dlink, dst_addr, at - ret, dst_imm);
 			}
+			r_reg_setv (reg, "PC", aop.addr + aop.size);
 			if (r_anal_op_nonlinear (aop.type)) {
-				r_reg_set_value (esil->anal->reg, pc, at);
-				set_retval (core, at - ret);
+				set_retval (core, reg, aop.addr);
 			} else {
-				r_core_esil_step (core, UT64_MAX, NULL, NULL, false);
+				const char *expr = R_STRBUF_SAFEGET (&aop.esil);
+				esil->addr = aop.addr;
+				if (R_STR_ISNOTEMPTY (expr)) {
+					r_esil_parse (esil, expr);
+					r_esil_stack_free (esil);
+				}
 			}
 			free (dlink);
 			free (vlink);
@@ -1984,15 +2192,14 @@ R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn) {
 	}
 beach:
 	r_core_call (core, "wc-*"); // drop cache writes
+	if (stack_fd >= 0) {
+		r_io_fd_close (core->io, stack_fd);
+	}
 	r_config_set_b (core->config, "io.cache", ioCache);
 	r_config_set_i (core->config, "dbg.follow", dbg_follow);
-	if (stack_set) {
-		r_core_call (core, "aeim-");
-	}
 	r_core_seek (core, oldoff, true);
 	r_esil_free (esil);
-	r_reg_arena_pop (core->anal->reg);
-	r_core_cmd0 (core, ".ar*");
+	r_reg_free (reg);
 	r_cons_break_pop (core->cons);
 	free (buf);
 }
@@ -2060,7 +2267,7 @@ static int cmd_type(void *data, const char *input) {
 	case 'u': { // "tu"
 		switch (input[1]) {
 		case '?':
-			r_core_cmd_help (core, help_msg_tu);
+			r_cons_cmd_help (core->cons, help_msg_tu);
 			break;
 		case '-': { // "tu-"
 			const char *arg = r_str_trim_head_ro (input + 2);
@@ -2110,7 +2317,7 @@ static int cmd_type(void *data, const char *input) {
 			break;
 		case 'e': // "tue"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_tu, "tue");
+				r_cons_cmd_help_match (core->cons, help_msg_tu, "tue", 0, true);
 			} else {
 				cmd_type_edit (core, r_str_trim_head_ro (input + 2), "tuc");
 			}
@@ -2143,7 +2350,7 @@ static int cmd_type(void *data, const char *input) {
 		break;
 	case 'k': // "tk"
 		if (input[1] == '?') {
-			r_core_cmd_help_match (core, help_msg_t, "tk");
+			r_cons_cmd_help_match (core->cons, help_msg_t, "tk", 0, true);
 		} else {
 			res = (input[1] == ' ')
 				? sdb_querys (TDB, NULL, -1, input + 2)
@@ -2160,7 +2367,7 @@ static int cmd_type(void *data, const char *input) {
 			cmd_tcc (core, input + 2);
 			break;
 		case '?': //"tc?"
-			r_core_cmd_help (core, help_msg_tc);
+			r_cons_cmd_help (core->cons, help_msg_tc);
 			break;
 		case ' ': { // "tcc "
 			const char *type = r_str_trim_head_ro (input + 1);
@@ -2191,13 +2398,13 @@ static int cmd_type(void *data, const char *input) {
 			break;
 		case 'd': // "tcd"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_tc, "tcd");
+				r_cons_cmd_help_match (core->cons, help_msg_tc, "tcd", 0, true);
 			} else {
 				r_core_cmd0 (core, "tud;tsd;ttc;ted");
 			}
 			break;
 		default:
-			r_core_cmd_help (core, help_msg_tc);
+			r_cons_cmd_help (core->cons, help_msg_tc);
 			break;
 		}
 		break;
@@ -2241,11 +2448,25 @@ static int cmd_type(void *data, const char *input) {
 		case ' ':
 			showFormat (core, r_str_trim_head_ro (input + 1), 0);
 			break;
+		case 'n': // "tsn"
+			if (input[2] == '?') {
+				r_cons_cmd_help_match (core->cons, help_msg_ts, "tsn", 0, true);
+			} else if (input[2] == ' ') {
+				const char *arg = r_str_trim_head_ro (input + 2);
+				if (R_STR_ISEMPTY (arg)) {
+					r_cons_cmd_help_match (core->cons, help_msg_ts, "tsn", 0, true);
+				} else {
+					print_structs_by_size (core, TDB, r_num_math (core->num, arg));
+				}
+			} else {
+				r_cons_cmd_help_match (core->cons, help_msg_ts, "tsn", 0, true);
+			}
+			break;
 		case 's': // "tss"
 			if (input[2] == ' ') {
-				r_cons_printf (core->cons, "%" PFMT64u "\n", (r_type_get_bitsize (TDB, input + 3) / 8));
+				r_cons_printf (core->cons, "%" PFMT64u "\n", (r_anal_type_bitsize (core->anal, input + 3) / 8));
 			} else {
-				r_core_cmd_help (core, help_msg_ts);
+				r_cons_cmd_help (core->cons, help_msg_ts);
 			}
 			break;
 		case 'c': // "tsc"
@@ -2256,7 +2477,7 @@ static int cmd_type(void *data, const char *input) {
 			break;
 		case 'e': // "tse"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_ts, "tse");
+				r_cons_cmd_help_match (core->cons, help_msg_ts, "tse", 0, true);
 			} else {
 				cmd_type_edit (core, r_str_trim_head_ro (input + 2), "tsc");
 			}
@@ -2273,7 +2494,7 @@ static int cmd_type(void *data, const char *input) {
 			print_struct_union_with_offsets (core, TDB, stdifstruct, r_str_trim_head_ro (input + 2), false);
 			break;
 		case '?': // "ts?"
-			r_core_cmd_help (core, help_msg_ts);
+			r_cons_cmd_help (core->cons, help_msg_ts);
 			break;
 		default:
 			r_core_return_invalid_command (core, "ts", input[1]);
@@ -2287,6 +2508,46 @@ static int cmd_type(void *data, const char *input) {
 		}
 		char *res = NULL, *temp = strchr (input, ' ');
 		Sdb *TDB = core->anal->sdb_types;
+		if (input[1] == 'n') { // "ten"
+			char mode = 0;
+			const char *arg = NULL;
+			const char *help_cmd = "ten";
+			switch (input[2]) {
+			case '?': // "ten?"
+				r_cons_cmd_help_match (core->cons, help_msg_te, "ten", 0, false);
+				break;
+			case 'j': // "tenj"
+			case 'q': // "tenq"
+				mode = input[2];
+				help_cmd = mode == 'j'? "tenj": "tenq";
+				if (input[3] == '?') {
+					r_cons_cmd_help_match (core->cons, help_msg_te, help_cmd, 0, true);
+					break;
+				}
+				arg = r_str_trim_head_ro (input + 3);
+				if (R_STR_ISEMPTY (arg)) {
+					r_cons_cmd_help_match (core->cons, help_msg_te, help_cmd, 0, true);
+					break;
+				}
+				print_enum_by_num (core, TDB, r_num_math (core->num, arg), mode);
+				break;
+			case ' ': // "ten "
+				arg = r_str_trim_head_ro (input + 2);
+				if (R_STR_ISEMPTY (arg)) {
+					r_cons_cmd_help_match (core->cons, help_msg_te, help_cmd, 0, true);
+					break;
+				}
+				print_enum_by_num (core, TDB, r_num_math (core->num, arg), mode);
+				break;
+			case '\0':
+				r_cons_cmd_help_match (core->cons, help_msg_te, help_cmd, 0, true);
+				break;
+			default:
+				r_core_return_invalid_command (core, "ten", input[2]);
+				break;
+			}
+			break;
+		}
 		char *name = temp ? strdup (temp + 1): NULL;
 		char *member_name = name ? strchr (name, ' '): NULL;
 
@@ -2313,7 +2574,7 @@ static int cmd_type(void *data, const char *input) {
 			break;
 		case 'j': // "tej"
 			if (input[2] == '?') {
-				r_core_cmd_help_contains (core, help_msg_te, "tej");
+				r_cons_cmd_help_match (core->cons, help_msg_te, "tej", 0, false);
 			} else if (input[2] == '\0') {
 				print_enum_list_json (core, TDB, NULL);
 			} else {
@@ -2322,35 +2583,35 @@ static int cmd_type(void *data, const char *input) {
 			break;
 		case 'b': // "teb"
 			if (R_STR_ISEMPTY (name) || input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_te, "teb");
+				r_cons_cmd_help_match (core->cons, help_msg_te, "teb", 0, true);
 			} else {
 				res = r_type_enum_member (TDB, name, member_name, 0);
 			}
 			break;
 		case 'c': // "tec"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_te, "tec");
+				r_cons_cmd_help_match (core->cons, help_msg_te, "tec", 0, true);
 			} else {
 				print_enum_in_c_format (core, TDB, r_str_trim_head_ro (input + 2), true);
 			}
 			break;
 		case 'd': // "ted"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_te, "ted");
+				r_cons_cmd_help_match (core->cons, help_msg_te, "ted", 0, true);
 			} else {
 				print_enum_in_c_format (core, TDB, r_str_trim_head_ro (input + 2), false);
 			}
 			break;
 		case 'e': // "tee"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_te, "tee");
+				r_cons_cmd_help_match (core->cons, help_msg_te, "tee", 0, true);
 			} else {
 				cmd_type_edit (core, r_str_trim_head_ro (input + 2), "tec");
 			}
 			break;
 		case 'v': // "tev"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_te, "tev");
+				r_cons_cmd_help_match (core->cons, help_msg_te, "tev", 0, true);
 			} else {
 				print_enum_with_offsets (core, TDB, r_str_trim_head_ro (input + 2));
 			}
@@ -2387,7 +2648,7 @@ static int cmd_type(void *data, const char *input) {
 			break;
 		}
 		case '?':
-			r_core_cmd_help (core, help_msg_te);
+			r_cons_cmd_help (core->cons, help_msg_te);
 			break;
 		default:
 			r_core_return_invalid_command (core, "te", *input);
@@ -2407,8 +2668,7 @@ static int cmd_type(void *data, const char *input) {
 			  const char *typdef = sdb_const_get (core->anal->sdb_types, token, 0);
 			  // Resolve typedef if any
 			  if (typdef && !strcmp (typdef, "typedef")) {
-				  r_strf_var (a, 128, "typedef.%s", token);
-				  const char *tokendef = sdb_const_get (core->anal->sdb_types, a, 0);
+				  const char *tokendef = sdb_const_getf (core->anal->sdb_types, NULL, "typedef.%s", token);
 				  if (tokendef) {
 					  token = tokendef;
 				  }
@@ -2421,14 +2681,14 @@ static int cmd_type(void *data, const char *input) {
 	case '*': // "t*"
 	case '\0': // "t"
 		if (input[0] && input[1] == '?') {
-			r_core_cmd_help_match_spec (core, help_msg_t, "t", input[0]);
+			r_cons_cmd_help_match (core->cons, help_msg_t, "t", input[0], true);
 		} else {
 			typesList (core, input[0]);
 		}
 		break;
 	case 'o': // "to"
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_to);
+			r_cons_cmd_help (core->cons, help_msg_to);
 		} else if (r_sandbox_check (R_SANDBOX_GRAIN_FILES | R_SANDBOX_GRAIN_DISK)) {
 			if (input[1] == ' ') {
 				const char *dir = r_config_get (core->config, "dir.types");
@@ -2441,7 +2701,7 @@ static int cmd_type(void *data, const char *input) {
 					}
 				}
 				if (!strcmp (filename, "-")) {
-					char *tmp = r_core_editor (core, "*.h", "");
+					char *tmp = r_core_editor (core, "*.h", "", NULL);
 					if (tmp) {
 						char *errmsg = NULL;
 						char *out = r_anal_cparse (core->anal, tmp, &errmsg);
@@ -2476,7 +2736,7 @@ static int cmd_type(void *data, const char *input) {
 				if (arg) {
 					r_file_touch (arg + 1);
 				} else {
-					r_core_cmd_help_match (core, help_msg_to, "touch");
+					r_cons_cmd_help_match (core->cons, help_msg_to, "touch", 0, true);
 				}
 			} else if (input[1] == 's') {
 				const char *dbpath = input + 3;
@@ -2491,11 +2751,11 @@ static int cmd_type(void *data, const char *input) {
 				if (R_STR_ISNOTEMPTY (dbname)) {
 					r_anal_types_load_sdb (core->anal, dbname);
 				} else {
-					r_core_cmd_help_match (core, help_msg_to, "tol");
+					r_cons_cmd_help_match (core->cons, help_msg_to, "tol", 0, true);
 				}
 			}  else if (input[1] == 'e') { // "toe"
 				char *str = r_core_cmd_strf (core , "tc %s", input + 2);
-				char *tmp = r_core_editor (core, "*.h", str);
+				char *tmp = r_core_editor (core, "*.h", str, NULL);
 				if (tmp) {
 					char *errmsg = NULL;
 					char *out = r_anal_cparse (core->anal, tmp, &errmsg);
@@ -2521,10 +2781,10 @@ static int cmd_type(void *data, const char *input) {
 	case 'd': // "td"
 		if (input[1] == '?') {
 			// TODO #7967 help refactor: move to detail
-			r_core_cmd_help_contains (core, help_msg_t, "td");
+			r_cons_cmd_help_match (core->cons, help_msg_t, "td", 0, false);
 		} else if (input[1] == 'e') { // "tde"
 			for (;;) {
-				char *tmp = r_core_editor (core, "*.h", "");
+				char *tmp = r_core_editor (core, "*.h", "", NULL);
 				if (!tmp) {
 					break;
 				}
@@ -2571,7 +2831,7 @@ static int cmd_type(void *data, const char *input) {
 	case 'v': // "tv"
 		switch (input[1]) {
 		case '?':
-			r_core_cmd_help (core, help_msg_tv);
+			r_cons_cmd_help (core->cons, help_msg_tv);
 			break;
 		case ' ':
 			print_type_view (core, r_str_trim_head_ro (input + 2));
@@ -2669,7 +2929,7 @@ static int cmd_type(void *data, const char *input) {
 			}
 			break;
 		default:
-			r_core_cmd_help (core, help_msg_tx);
+			r_cons_cmd_help (core->cons, help_msg_tx);
 			break;
 		}
 		break;
@@ -2684,11 +2944,11 @@ static int cmd_type(void *data, const char *input) {
 			if (input[2] == 'l') {
 				cmd_tail (core, input);
 			} else {
-				r_core_cmd_help_match (core, help_msg_t, "tail");
+				r_cons_cmd_help_match (core->cons, help_msg_t, "tail", 0, true);
 			}
 			break;
 		default:
-			r_core_cmd_help_contains (core, help_msg_t, "ta");
+			r_cons_cmd_help_match (core->cons, help_msg_t, "ta", 0, false);
 			break;
 		}
 		break;
@@ -2696,7 +2956,7 @@ static int cmd_type(void *data, const char *input) {
 	case 'l': // "tl"
 		switch (input[1]) {
 		case '?':
-			r_core_cmd_help (core, help_msg_tl);
+			r_cons_cmd_help (core->cons, help_msg_tl);
 			break;
 		case ' ': {
 			char *type = strdup (input + 2);
@@ -2783,7 +3043,7 @@ static int cmd_type(void *data, const char *input) {
 		break;
 	case 'p':  // "tp"
 		if (input[1] == '?') { // "tp?"
-			r_core_cmd_help (core, help_msg_tp);
+			r_cons_cmd_help (core->cons, help_msg_tp);
 		} else if (input[1] == 'v') { // "tpv"
 			const char *type_name = r_str_trim_head_ro (input + 2);
 			char *fmt = r_type_format (TDB, type_name);
@@ -2797,7 +3057,7 @@ static int cmd_type(void *data, const char *input) {
 				}
 			}
 			} else {
-				r_core_cmd_help_match (core, help_msg_tp, "tpv");
+				r_cons_cmd_help_match (core->cons, help_msg_tp, "tpv", 0, true);
 			}
 		} else if (input[1] == ' ' || input[1] == 'x' || !input[1]) {
 			char *tmp = strdup (input);
@@ -2844,7 +3104,7 @@ static int cmd_type(void *data, const char *input) {
 							}
 						}
 					}
-					int type_size = r_type_get_bitsize (core->anal->sdb_types, type) / 8;
+					int type_size = r_anal_type_bitsize (core->anal, type) / 8;
 					int obs = core->blocksize;
 					if (type_size > obs) {
 						r_core_block_size (core, type_size);
@@ -2861,19 +3121,19 @@ static int cmd_type(void *data, const char *input) {
 				free (fmt);
 				free (type);
 			} else {
-				r_core_cmd_help (core, help_msg_tp);
+				r_cons_cmd_help (core->cons, help_msg_tp);
 			}
 			free (tmp);
 		} else { // "tp"
-			r_core_cmd_help (core, help_msg_tp);
+			r_cons_cmd_help (core->cons, help_msg_tp);
 		}
 		break;
 	case '-': // "t-"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_t, "t-");
+			r_cons_cmd_help_match (core->cons, help_msg_t, "t-", 0, false);
 		} else if (input[1] == '*') {
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_t, "t-*");
+				r_cons_cmd_help_match (core->cons, help_msg_t, "t-*", 0, true);
 			} else {
 				sdb_reset (TDB);
 			}
@@ -2899,7 +3159,7 @@ static int cmd_type(void *data, const char *input) {
 		case '-': { // "tf-"
 			const char *arg = r_str_trim_head_ro (input + 2);
 			if (R_STR_ISEMPTY (arg)) {
-				r_core_cmd_help_match (core, help_msg_tf, "tf-");
+				r_cons_cmd_help_match (core->cons, help_msg_tf, "tf-", 0, true);
 			} else if (strchr (arg, '*') || strchr (arg, ' ')) {
 				types_remove_glob (core, stdiffunc, arg);
 			} else {
@@ -2926,7 +3186,7 @@ static int cmd_type(void *data, const char *input) {
 			break;
 		case 'e': // "tfe"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_tf, "tfe");
+				r_cons_cmd_help_match (core->cons, help_msg_tf, "tfe", 0, true);
 			} else {
 				cmd_type_edit (core, r_str_trim_head_ro (input + 2), "tfc");
 			}
@@ -2943,7 +3203,7 @@ static int cmd_type(void *data, const char *input) {
 			if (input[2] == ' ') {
 				print_func_with_offsets (core, TDB, r_str_trim_head_ro (input + 3));
 			} else if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_tf, "tfv");
+				r_cons_cmd_help_match (core->cons, help_msg_tf, "tfv", 0, true);
 			} else {
 				print_func_with_offsets (core, TDB, NULL);
 			}
@@ -2959,7 +3219,7 @@ static int cmd_type(void *data, const char *input) {
 			break;
 		}
 		default:
-			r_core_cmd_help (core, help_msg_tf);
+			r_cons_cmd_help (core->cons, help_msg_tf);
 			break;
 		}
 		break;
@@ -2982,13 +3242,11 @@ static int cmd_type(void *data, const char *input) {
 						if (!input[1]) {
 							r_cons_println (core->cons, name);
 						} else {
-							char *q = r_str_newf ("typedef.%s", name);
-							const char *res = sdb_const_get (TDB, q, 0);
+							const char *res = sdb_const_getf (TDB, NULL, "typedef.%s", name);
 							if (!res) {
 								res = "";
 							}
 							pj_ks (pj, name, res);
-							free (q);
 						}
 					}
 				}
@@ -3023,9 +3281,7 @@ static int cmd_type(void *data, const char *input) {
 								continue;
 							}
 						}
-						char *q = r_str_newf ("typedef.%s", name);
-						const char *res = sdb_const_get (TDB, q, 0);
-						free (q);
+						const char *res = sdb_const_getf (TDB, NULL, "typedef.%s", name);
 						if (res) {
 							r_cons_printf (core->cons, "%s %s %s;\n", sdbkv_value (kv), res, name);
 						}
@@ -3041,26 +3297,24 @@ static int cmd_type(void *data, const char *input) {
 		}
 		if (input[1] == 'e') { // "tte"
 			if (input[2] == '?') {
-				r_core_cmd_help_match (core, help_msg_tt, "tte");
+				r_cons_cmd_help_match (core->cons, help_msg_tt, "tte", 0, true);
 			} else {
 				cmd_type_edit (core, r_str_trim_head_ro (input + 2), "ttc");
 			}
 			break;
 		}
 		if (input[1] == '?') {
-			r_core_cmd_help (core, help_msg_tt);
+			r_cons_cmd_help (core->cons, help_msg_tt);
 			break;
 		}
 		char *s = strdup (input + 2);
 		const char *istypedef;
 		istypedef = sdb_const_get (TDB, s, 0);
 		if (istypedef && !strncmp (istypedef, "typedef", 7)) {
-			char *q = r_str_newf ("typedef.%s", s);
-			const char *res = sdb_const_get (TDB, q, 0);
+			const char *res = sdb_const_getf (TDB, NULL, "typedef.%s", s);
 			if (res) {
 				r_cons_println (core->cons, res);
 			}
-			free (q);
 		} else {
 			R_LOG_ERROR ("This is not a typedef");
 		}
@@ -3068,7 +3322,7 @@ static int cmd_type(void *data, const char *input) {
 		break;
 	}
 	case '?':
-		r_core_cmd_help (core, help_msg_t);
+		r_cons_cmd_help (core->cons, help_msg_t);
 		break;
 	default:
 		r_core_return_invalid_command (core, "t", *input);

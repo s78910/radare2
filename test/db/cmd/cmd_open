@@ -27,7 +27,7 @@ om
 EOF
 EXPECT=<<EOF
  3 - r-- 0x0000c3ef bins/elf/ezpz
-- 1 fd: 3 +0x00000000 0x00004000 - 0x000103ee r--
+- 1 fd: 3 +0x00000000 0x00004000 - 0x000103ee r-- r--
 EOF
 EXPECT_ERR=<<EOF
 ok
@@ -37,6 +37,7 @@ RUN
 NAME=m1slice.v35
 ARGS=-a arm.v35
 FILE=bins/mach0/ls-m1
+REQUIRE=arm.v35
 CMDS=<<EOF
 pd 2
 ie
@@ -324,6 +325,34 @@ b32ae931000000000200
 EOF
 RUN
 
+NAME=oba loads default slice from fat macho header
+FILE=bins/mach0/libexpat.1.dylib
+ARGS=-n
+CMDS=<<EOF
+oba $$
+i~^arch[1]
+i~^bintype[1]
+EOF
+EXPECT=<<EOF
+x86
+mach0
+EOF
+RUN
+
+NAME=oba rejects malformed macho kernelcache load command
+FILE=malloc://41
+ARGS=-n -w
+CMDS=<<EOF
+e log.quiet=true
+wx cffaedfe0c0000010000000002000000ffffff7f00000000000020000000000000000000000000000000
+oba 0
+?e ok
+EOF
+EXPECT=<<EOF
+ok
+EOF
+RUN
+
 NAME=ob select files
 FILE=malloc://1024
 CMDS=<<EOF
@@ -424,8 +453,8 @@ EXPECT=<<EOF
 
 0x00000010  2021 2223 2425 2627 2829 2a2b 2c2d 2e2f   !"#$%&'()*+,-./
 
-* 2 fd: 4 +0x00000000 0x00000000 - 0x000000ff rwx
-- 1 fd: 3 +0x00000000 0x00000000 - 0x000001ff rwx
+* 2 fd: 4 +0x00000000 0x00000000 - 0x000000ff rwx rwx
+- 1 fd: 3 +0x00000000 0x00000000 - 0x000001ff rwx rwx
 
 0x00000010  1011 1213 1415 1617 1819 1a1b 1c1d 1e1f  ................
 EOF
@@ -446,9 +475,8 @@ RUN
 
 NAME=o: obj
 FILE=-
+ARGS=-a x86 -b 64
 CMDS=<<EOF
-e asm.arch=x86
-e asm.bits=64
 obj~{}
 EOF
 EXPECT=<<EOF
@@ -485,11 +513,11 @@ om
 # pv1
 EOF
 EXPECT=<<EOF
-- 5 fd: 3 +0x00000000 0x00000000 - 0x0000347f rwx fmap.LOAD0
-* 4 fd: 3 +0x00004000 0x00004000 - 0x00016790 rwx fmap.LOAD1
-- 3 fd: 3 +0x00017000 0x00017000 - 0x0001f7bf rwx fmap.LOAD2
-- 2 fd: 3 +0x00020050 0x00021050 - 0x00022267 rwx fmap.LOAD3
-- 1 fd: 4 +0x00000000 0x00022268 - 0x00023557 rw- mmap.LOAD3
+- 5 fd: 3 +0x00000000 0x00000000 - 0x0000347f rwx r-- fmap.LOAD0
+* 4 fd: 3 +0x00004000 0x00004000 - 0x00016790 rwx r-x fmap.LOAD1
+- 3 fd: 3 +0x00017000 0x00017000 - 0x0001f7bf rwx r-- fmap.LOAD2
+- 2 fd: 3 +0x00020050 0x00021050 - 0x00022267 rwx rw- fmap.LOAD3
+- 1 fd: 4 +0x00000000 0x00022268 - 0x00023557 rw- rw- mmap.LOAD3
 EOF
 RUN
 
@@ -574,7 +602,7 @@ file     malloc://512
 size     0x200
 humansz  512
 mode     rwx
-format   any
+format   null
 iorw     true
 block    0x100
 EOF
@@ -686,7 +714,7 @@ NAME=obf?
 FILE=--
 CMDS=obf?
 EXPECT=<<EOF
-| obf ([file])  load bininfo for current file (useful for r2 -n)
+| obf ([file|base64:file])  load bininfo for current file (useful for r2 -n)
 EOF
 RUN
 
@@ -726,4 +754,41 @@ EXPECT=<<EOF
 1
 1
 EOF
+RUN
+
+NAME=obf reload does not duplicate bin objects or maps
+FILE=bins/elf/dwarf_lief_extrasec.elf
+ARGS=-e bin.relocs=false
+CMDS=<<EOF2
+?e ob=`ob~?` om=`om~?` iS=`iS~?`
+obf
+obf
+obf
+?e ob=`ob~?` om=`om~?` iS=`iS~?`
+s `iS~mysec1[3]`
+?e mysec1_at_seek=`iS.~mysec1[8]`
+EOF2
+EXPECT=<<EOF2
+ob=1 om=7 iS=40
+ob=1 om=7 iS=40
+mysec1_at_seek=.mysec1
+EOF2
+RUN
+
+NAME=obf reload does not duplicate bin objects (generic elf)
+FILE=bins/elf/analysis/hello-linux-x86_64
+ARGS=-e bin.relocs.apply=true
+CMDS=<<EOF2
+ob~?
+obf
+obf
+obf
+ob~?
+iS~?
+EOF2
+EXPECT=<<EOF2
+1
+1
+32
+EOF2
 RUN

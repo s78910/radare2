@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2007-2025 - pancake & Skia */
+/* radare - LGPL - Copyright 2007-2026 - pancake & Skia */
 
 #include <r_cons.h>
 #include <r_util.h>
@@ -106,6 +106,29 @@ static float updateAddr(const ut8 *buf, int len, int endian, ut64 *addr, ut64 *a
 		*addr64 = r_read_ble64 (buf, endian);
 	}
 	return f;
+}
+
+static int pf_format_value_size(int size) {
+	return size < 1? 4: size;
+}
+
+static ut64 pf_read_value(const ut8 *buf, int size, bool endian) {
+	const int bytes = pf_format_value_size (size);
+	if (bytes < 1 || bytes > 8) {
+		return 0;
+	}
+	ut64 value = 0;
+	int i;
+	if (endian) {
+		for (i = 0; i < bytes; i++) {
+			value = (value << 8) | buf[i];
+		}
+	} else {
+		for (i = bytes - 1; i >= 0; i--) {
+			value = (value << 8) | buf[i];
+		}
+	}
+	return value;
 }
 
 static int r_get_size(RNum *num, ut8 *buf, int endian, const char *s) {
@@ -218,7 +241,8 @@ static void r_print_format_byte(RPrintFormat *pf, const char *setval, ut64 seeki
 	int elem;
 	PF_EXTRACT_ELEM (elem, size);
 	if (MUSTSET) {
-		r_print_printf (p, "'0x%08" PFMT64x "'w %s\n", setval, seeki + ((elem >= 0)? elem: 0));
+		ut64 addr = seeki + ((elem >= 0)? elem: 0);
+		r_print_printf (p, "'0x%08" PFMT64x "'w %s\n", addr, setval);
 	} else if (MUSTSEEJSON) {
 		if (size == -1) {
 			pj_kn (pf->pj, "value", buf[i]);
@@ -1330,10 +1354,9 @@ static void r_print_format_bitfield(RPrintFormat *pf, ut64 seeki, char *fmtname,
 	const RPrint *p = pf->p;
 	const int mode = pf->mode;
 	const ut32 max_shift = (sizeof (ut64) * 8U) - 1;
-	if (size <= 0 || size >= 8) {
-		addr = 0;
-	} else {
-		ut32 shift = (ut32)size * 8U;
+	const int bytes = pf_format_value_size (size);
+	if (bytes < 8) {
+		ut32 shift = (ut32)bytes * 8U;
 		if (shift > max_shift) {
 			shift = max_shift;
 		}
@@ -1367,10 +1390,11 @@ static void r_print_format_enum(RPrintFormat *pf, ut64 seeki, char *fmtname, cha
 	const int mode = pf->mode;
 	const RPrint *p = pf->p;
 	R_RETURN_IF_FAIL (p && fmtname && fieldname);
-	if (size >= 8) {
+	const int bytes = pf_format_value_size (size);
+	if (bytes >= 8) {
 		// avoid shift overflow
 	} else {
-		addr &= (1ULL << (size * 8)) - 1;
+		addr &= (1ULL << (bytes * 8)) - 1;
 	}
 	if (MUSTSEE && !SEEVALUE) {
 		r_print_printf (p, "0x%08" PFMT64x " = ", seeki);
@@ -2048,9 +2072,7 @@ R_API int r_print_format_internal(RPrint *p, RPrintFormat *pf, ut64 seek, const 
 	/* get times */
 	otimes = times = atoi (arg);
 	if (times > 0) {
-		while (isdigit (*arg)) {
-			arg++;
-		}
+		arg = r_str_trim_head_digits (arg);
 	}
 
 	char *bracket = strchr (arg, '{');
@@ -2649,13 +2671,7 @@ R_API int r_print_format_internal(RPrint *p, RPrintFormat *pf, ut64 seek, const 
 						r_print_printf (p, "wv4 %s @ 0x%08" PFMT64x "\n", setval, seeki + ((elem >= 0)? elem * 4: 0));
 						// R_LOG_ERROR ("Set val not implemented yet for bitfields!");
 					}
-					if (pf->endian) {
-						int el_size = (size == -1)? 1: size;
-						int read_size = 8; // updateAddr always reads 8 bytes in format2.c
-						if (el_size < 8 && el_size < read_size) {
-							addr >>= (read_size - el_size) * 8;
-						}
-					}
+					addr = pf_read_value (buf + i, size, pf->endian);
 					r_print_format_bitfield (pf, seeki, fmtname, fieldname, addr, size);
 					i += (size == -1)? 1: size;
 					break;
@@ -2664,13 +2680,7 @@ R_API int r_print_format_internal(RPrint *p, RPrintFormat *pf, ut64 seek, const 
 					if (MUSTSET) {
 						r_print_printf (p, "wv4 %s @ 0x%08" PFMT64x "\n", setval, seeki + ((elem >= 0)? elem * 4: 0));
 					}
-					if (pf->endian) {
-						int el_size = (size == -1)? 1: size;
-						int read_size = 8; // updateAddr always reads 8 bytes in format2.c
-						if (el_size < 8 && el_size < read_size) {
-							addr >>= (read_size - el_size) * 8;
-						}
-					}
+					addr = pf_read_value (buf + i, size, pf->endian);
 					if (fmtname) {
 						r_print_format_enum (pf, seeki, fmtname, fieldname, addr, size);
 					} else {

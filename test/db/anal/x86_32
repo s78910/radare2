@@ -15,6 +15,78 @@ bytes: 9c
 EOF
 RUN
 
+NAME=x86-32 static calling convention stack pop
+FILE=-
+CMDS=<<EOF
+e asm.arch=x86
+e anal.arch=x86
+e asm.bits=32
+k anal/cc/cc.cdecl.pop
+k anal/cc/cc.cdecl-fastcall-ms.pop
+k anal/cc/cc.optlink.pop
+k anal/cc/cc.stdcall.pop
+k anal/cc/cc.fastcall.pop
+k anal/cc/cc.borland.pop
+k anal/cc/cc.watcom.pop
+k anal/cc/cc.pascal.pop
+k anal/cc/cc.dlang.pop
+EOF
+EXPECT=<<EOF
+caller
+callee
+callee
+callee
+callee
+callee
+callee
+callee
+callee
+EOF
+RUN
+
+NAME=x86-32 static calling convention preserve sets
+FILE=-
+CMDS=<<EOF
+e asm.arch=x86
+e anal.arch=x86
+e asm.bits=32
+k anal/cc/cc.cdecl.preserve
+k anal/cc/cc.stdcall.preserve
+k anal/cc/cc.fastcall.preserve
+k anal/cc/cc.cdecl.clobber
+k anal/cc/cc.stdcall.clobber
+k anal/cc/cc.fastcall.clobber
+EOF
+EXPECT=<<EOF
+ebx,esi,edi,ebp,esp
+ebx,esi,edi,ebp,esp
+ebx,esi,edi,ebp,esp
+eax,ecx,edx
+eax,ecx,edx
+eax,ecx,edx
+EOF
+RUN
+
+NAME=x86-32 cdecl clobber kills optlink eax arg after call
+FILE=malloc://32
+CMDS=<<EOF
+e asm.arch=x86
+e anal.arch=x86
+e asm.bits=32
+e anal.cc=optlink
+wx 89c2e80900000089c1c3909090909090c3
+af @ 0
+afc optlink @ 0
+af @ 0x10
+afc cdecl @ 0x10
+afva @ 0
+afvR @ 0
+EOF
+EXPECT=<<EOF
+      arg1  0x0
+EOF
+RUN
+
 NAME=hang-on-aa/-aac fix (#15004)
 FILE=bins/pe/15004.file
 CMDS=<<EOF
@@ -24,7 +96,7 @@ e asm.var=false
 pdb
 EOF
 EXPECT=<<EOF
-/ 337: entry0 (int32_t arg_ch, int32_t arg_1dh, int32_t arg_31h, int32_t arg_0h, int32_t arg_4h, int32_t arg_18h, int32_t arg_1ch, int32_t arg_28h, int32_t arg_2ch, int32_t arg_30h, int32_t arg_44h, int32_t arg_50h, int32_t arg_78h, int32_t arg_7ch, int32_t arg_80h, int32_t arg_84h, int32_t arg_c8h);
+/ 337: entry0 (int32_t arg_0h, int32_t arg_4h, int32_t arg_18h, int32_t arg_1ch, int32_t arg_28h, int32_t arg_2ch, int32_t arg_30h, int32_t arg_44h, int32_t arg_50h, int32_t arg_78h, int32_t arg_7ch, int32_t arg_80h, int32_t arg_84h, int32_t arg_c8h);
 |           0x006453a1      e8d8170000     call fcn.00646b7e
 |           0x006453a6      8d642444       lea esp, [arg_44h]
 |       ,=< 0x006453aa      0f85a6300000   jne 0x648456
@@ -1104,7 +1176,7 @@ EXPECT=<<EOF
 0x004010a5 1 case.0x40100e.8
 0x004010a5 1 case.0x40100e.10
 0x004010a5 1 case.default.0x40100e
-0x0040be7e 1 case.default.0x40be85
+0x0040be6d 1 case.default.0x40be85
 0x0040bed4 1 case.0x40beb5.0
 0x0040bed4 1 case.0x40be85.0
 0x0040bedc 1 case.0x40beb5.1
@@ -1149,7 +1221,7 @@ EXPECT=<<EOF
 0x004010ae 1 case.0x40100e.8
 0x004010ae 1 case.0x40100e.10
 0x004010ae 1 case.default.0x40100e
-0x0040286e 1 case.default.0x402875
+0x0040285d 1 case.default.0x402875
 0x004028c4 1 case.0x4028a5.0
 0x004028c4 1 case.0x402875.0
 0x004028cc 1 case.0x4028a5.1
@@ -1424,6 +1496,69 @@ axt @ str.john
 EOF
 EXPECT=<<EOF
 main 0x804831a [STRN:r--] mov dword [var_ch], str.john
+EOF
+RUN
+
+NAME=imul var sub capstone
+FILE=bins/elf/ioli/crackme0x02
+CMDS=<<EOF
+e asm.arch = x86
+e anal.arch = x86
+aa
+s 0x8048444
+pi 1
+EOF
+EXPECT=<<EOF
+imul eax, dword [var_8h]
+EOF
+RUN
+
+# variable substitution doesnt yet work on zydis
+NAME=imul var sub zydis
+REQUIRE=zydis
+BROKEN=1
+FILE=bins/elf/ioli/crackme0x02
+CMDS=<<EOF
+e asm.arch = x86.zydis
+e anal.arch = x86.zydis
+aa
+s 0x8048444
+pi 1
+EOF
+EXPECT=<<EOF
+imul eax, dword [var_8h]
+EOF
+RUN
+
+# note: use afv[RW] [var]~?[addr] to check for a specific xref,
+# since many xrefs are still missing on both capstone and zydis
+
+NAME=imul var xref capstone
+FILE=bins/elf/ioli/crackme0x02
+CMDS=<<EOF
+e asm.arch = x86
+e anal.arch = x86
+aa
+s 0x8048444
+afvR var_8h~?0x8048444
+EOF
+EXPECT=<<EOF
+1
+EOF
+RUN
+
+NAME=imul var xref zydis
+REQUIRE=zydis
+FILE=bins/elf/ioli/crackme0x02
+CMDS=<<EOF
+e asm.arch = x86.zydis
+e anal.arch = x86.zydis
+aa
+s 0x8048444
+afvR var_8h~?0x8048444
+EOF
+EXPECT=<<EOF
+1
 EOF
 RUN
 
@@ -3534,6 +3669,45 @@ EXPECT=<<EOF
 EOF
 RUN
 
+NAME=dyncc role-only self arg recovery
+FILE=malloc://32
+CMDS=<<EOF
+e asm.arch=x86
+e asm.bits=32
+e scr.color=0
+wx 89d8c3
+af
+afc dyncc::eax!Tebx
+afva
+afvr~self
+EOF
+EXPECT=<<EOF
+arg int32_t self @ ebx
+EOF
+RUN
+
+NAME=stdcall import prototype callee stack pop vars
+FILE=malloc://0x100
+CMDS=<<EOF
+e asm.arch=x86
+e asm.bits=32
+e scr.color=0
+wx 6a046a036a026a01e8430000008b442404c3 @ 0
+wx c3 @ 0x50
+fs imports
+f sym.imp.foobar 1 0x50
+fs *
+td int foobar(int a, int b, int c, int d);
+tk func.foobar.cc=stdcall
+af
+afva
+afvs~arg_4h
+EOF
+EXPECT=<<EOF
+arg int32_t arg_4h @ esp+0x14
+EOF
+RUN
+
 
 NAME=tiny1 aae
 FILE=bins/elf/analysis/tiny1
@@ -3599,5 +3773,107 @@ EXPECT=<<EOF
 `-----------------'
 
 0x0804805b    2      9 fcn.0804805b
+EOF
+RUN
+
+NAME=callargs reads stack arguments from the call-site stack pointer
+FILE=malloc://256
+ARGS=-a x86 -b 32
+CMDS=<<EOF
+wx 68580000006850000000e81100000083c408c3
+wx c3 @ 0x20
+w AA @ 0x50
+w BB @ 0x58
+af @ 0x20
+afn twostr @ 0x20
+'td int twostr(const char *first, const char *second);
+af @ 0
+a:callargs-q 0xa
+EOF
+EXPECT=<<EOF
+int twostr("AA", "BB")
+EOF
+RUN
+
+NAME=callargs advances past a wide stack argument
+FILE=malloc://256
+ARGS=-a x86 -b 32
+CMDS=<<EOF
+wx 685800000068000000006844332211e80c00000083c40cc3
+wx c3 @ 0x20
+w BB @ 0x58
+af @ 0x20
+afn f @ 0x20
+'td int f(uint64_t a, char *s);
+af @ 0
+a:callargs-q 0xf
+EOF
+EXPECT=<<EOF
+int f(0x0000000000000000, "BB")
+EOF
+RUN
+
+NAME=callargs reports the source location it actually read under revarg
+FILE=malloc://256
+ARGS=-a x86 -b 32
+CMDS=<<EOF
+wx bf58000000be50000000e81100000083c404c3
+wx c3 @ 0x20
+w AA @ 0x50
+w BB @ 0x58
+af @ 0x20
+afn two @ 0x20
+'td int two(char *a, char *b);
+tk func.two.cc=dlang
+af @ 0
+a:callargs-j 0xa~{args[0].source}
+a:callargs-j 0xa~{args[0].value}
+a:callargs-j 0xa~{args[1].source}
+a:callargs-j 0xa~{args[1].value}
+EOF
+EXPECT=<<EOF
+esi
+\"AA\"
+edi
+\"BB\"
+EOF
+RUN
+
+NAME=callargs shifts a reverse-stack argument past a wide one pushed after it
+FILE=malloc://256
+ARGS=-a x86 -b 32
+CMDS=<<EOF
+wx 685000000068000000006822222222e80c00000083c40cc3
+wx c3 @ 0x20
+w AA @ 0x50
+af @ 0x20
+afn revwide @ 0x20
+'td int revwide(char *a, uint64_t b);
+tk func.revwide.cc=pascal
+af @ 0
+a:callargs-j 0xf~{args[0].value}
+EOF
+EXPECT=<<EOF
+\"AA\"
+EOF
+RUN
+
+NAME=callargs keeps fixed stack slots that are not in ascending order
+FILE=malloc://256
+ARGS=-a x86 -b 32
+CMDS=<<EOF
+wx 68111111116822222222685000000068333333336858000000e80200000083c414c3
+wx c3 @ 0x20
+w AA @ 0x50
+w BB @ 0x58
+af @ 0x20
+afn fixedslots @ 0x20
+'td int fixedslots(char *a, char *b);
+tk func.fixedslots.cc=dyncc:^2,^0:eax
+af @ 0
+a:callargs-q 0x19
+EOF
+EXPECT=<<EOF
+int fixedslots("AA", "BB")
 EOF
 RUN

@@ -18,8 +18,9 @@ NAME=acm
 FILE=-
 CMDS=<<EOF
 ac Flatline
-acm Flatline PrayerPosition 0x1337 0x42
+acm Flatline PrayerPosition 0x1337 0x42 0x4242
 acll
+aclj~{[0].methods[0].vtable_addr}
 k anal/classes/*
 ?e -
 k anal/classes/attrs/*
@@ -28,10 +29,11 @@ EOF
 EXPECT=<<EOF
 Flatline
   PrayerPosition @ 0x1337 (vtable + 0x42)
+16962
 Flatline=c
 -
 attr.Flatline.method=PrayerPosition
-attr.Flatline.method.PrayerPosition=4919,66
+attr.Flatline.method.PrayerPosition=4919,66,16962
 attrtypes.Flatline=method
 0x00001337 0 method.Flatline.PrayerPosition
 EOF
@@ -261,6 +263,19 @@ attrtypes.Flatline=base
 Flatline:
      0 PeripherySong @ +0x0
      1 NiceSong @ +0x42
+EOF
+RUN
+
+NAME=acb objc inheritance
+FILE=bins/mach0/objc-employee
+ARGS=-e bin.cache=true -e log.quiet=true
+CMDS=<<EOF
+aaa
+acb Employee
+EOF
+EXPECT=<<EOF
+Employee:
+     0 NSObject @ +0x0
 EOF
 RUN
 

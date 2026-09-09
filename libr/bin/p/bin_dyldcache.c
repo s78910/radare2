@@ -97,27 +97,58 @@ static cache_img_t *read_cache_images(RBuffer *cache_buf, cache_hdr_t *hdr, ut64
 	return images;
 }
 
-static void match_bin_entries(RDyldCache *cache, void *entries, ut64 entries_count, bool has_large_entries) {
-	R_RETURN_IF_FAIL (cache && cache->bin_by_pa && entries);
+static ut64 locsym_entry_get(const void *entries, ut32 i, bool has_large_entries, ut32 *start_index, ut32 *count) {
+	if (has_large_entries) {
+		const cache_locsym_entry_large_t *e = &((const cache_locsym_entry_large_t *) entries)[i];
+		*start_index = e->nlistStartIndex;
+		*count = e->nlistCount;
+		return e->dylibOffset;
+	}
+	const cache_locsym_entry_t *e = &((const cache_locsym_entry_t *) entries)[i];
+	*start_index = e->nlistStartIndex;
+	*count = e->nlistCount;
+	return e->dylibOffset;
+}
 
-	ut32 i;
-	for (i = 0; i < entries_count; i++) {
-		if (has_large_entries) {
-			cache_locsym_entry_large_t *e = &((cache_locsym_entry_large_t *) entries)[i];
-			RDyldBinImage *bin = ht_up_find (cache->bin_by_pa, e->dylibOffset, NULL);
-			if (bin) {
-				bin->nlist_start_index = e->nlistStartIndex;
-				bin->nlist_count = e->nlistCount;
-			}
-		} else {
-			cache_locsym_entry_t *e = &((cache_locsym_entry_t *) entries)[i];
-			RDyldBinImage *bin = ht_up_find (cache->bin_by_pa, e->dylibOffset, NULL);
-			if (bin) {
-				bin->nlist_start_index = e->nlistStartIndex;
-				bin->nlist_count = e->nlistCount;
-			}
+static HtUP *create_bin_by_locsym_offset(RDyldCache *cache) {
+	if (!cache->n_maps) {
+		return NULL;
+	}
+	HtUP *bin_by_locsym = ht_up_new0 ();
+	if (!bin_by_locsym) {
+		return NULL;
+	}
+	const ut64 base_va = cache->maps[0].address;
+	RListIter *iter;
+	RDyldBinImage *bin;
+	r_list_foreach (cache->bins, iter, bin) {
+		if (bin->va >= base_va) {
+			ht_up_insert (bin_by_locsym, bin->va - base_va, bin);
 		}
 	}
+	return bin_by_locsym;
+}
+
+static void match_bin_entries(RDyldCache *cache, void *entries, ut64 entries_count, bool has_large_entries) {
+	if (!cache || !cache->bins || !entries) {
+		return;
+	}
+	HtUP *bin_by_locsym = create_bin_by_locsym_offset (cache);
+	if (!bin_by_locsym) {
+		return;
+	}
+	ut32 i;
+	for (i = 0; i < entries_count; i++) {
+		ut32 start_index = 0;
+		ut32 count = 0;
+		ut64 dylib_offset = locsym_entry_get (entries, i, has_large_entries, &start_index, &count);
+		RDyldBinImage *bin = ht_up_find (bin_by_locsym, dylib_offset, NULL);
+		if (bin) {
+			bin->nlist_start_index = start_index;
+			bin->nlist_count = count;
+		}
+	}
+	ht_up_free (bin_by_locsym);
 }
 
 static RDyldLocSym *r_dyld_locsym_new(RDyldCache *cache) {
@@ -240,6 +271,8 @@ static void symbols_from_locsym(RDyldCache *cache, RDyldBinImage *bin, RBinFile 
 		RBinSymbol *sym = RVecRBinSymbol_emplace_back (&bf->bo->symbols_vec);
 		memset (sym, 0, sizeof (RBinSymbol));
 		sym->type = R_BIN_TYPE_FUNC_STR;
+		sym->bind = R_BIN_BIND_LOCAL_STR;
+		sym->forwarder = "NONE";
 		sym->vaddr = nlist->n_value;
 		sym->paddr = va2pa (nlist->n_value, cache->n_maps, cache->maps, cache->buf, slide, NULL, NULL);
 		sym->name = r_bin_name_new_from (symstr);
@@ -422,35 +455,38 @@ static void carve_deps_at_address(RDyldCache *cache, cache_img_t *img, HtSU *pat
 	cmds[mh.sizeofcmds] = 0;
 	ut8 *cursor = cmds;
 	ut8 *end = cmds + mh.sizeofcmds;
-	while (cursor < end) {
+	while (end - cursor >= 8) {
 		ut32 cmd = r_read_le32 (cursor);
-		ut32 cmdsize = r_read_le32 (cursor + sizeof (ut32));
-		if (cmdsize < 8 || cursor + cmdsize > end) {
+		ut32 cmdsize = r_read_le32 (cursor + 4);
+		if (cmdsize < 8 || cmdsize > (size_t)(end - cursor)) {
 			break;
 		}
-		ut8 *cmd_end = cursor + cmdsize;
-		if (cmd == LC_LOAD_DYLIB ||
-				cmd == LC_LOAD_WEAK_DYLIB ||
-				cmd == LC_REEXPORT_DYLIB ||
-				cmd == LC_LOAD_UPWARD_DYLIB) {
-			ut32 path_offset = r_read_le32 (cursor + 2 * sizeof (ut32));
-			bool found;
-			if (cursor + path_offset >= cmd_end) {
-				R_LOG_ERROR ("Malformed load command");
-				goto nextcmd;
+		switch (cmd) {
+		case LC_LOAD_DYLIB:
+		case LC_LOAD_WEAK_DYLIB:
+		case LC_REEXPORT_DYLIB:
+		case LC_LOAD_UPWARD_DYLIB:
+			{
+				// path_offset lives at +8, so cmdsize must cover it; short commands read cmdsize (>= cmdsize) and are rejected
+				ut32 path_offset = cmdsize >= 12 ? r_read_le32 (cursor + 8) : cmdsize;
+				if (path_offset >= cmdsize) {
+					R_LOG_ERROR ("Malformed load command");
+					break;
+				}
+				bool found;
+				const char *key = (const char *) cursor + path_offset;
+				size_t dep_index = (size_t)ht_su_find (path_to_idx, key, &found);
+				if (!found || dep_index >= cache->hdr->imagesCount) {
+					R_LOG_WARN ("alien dep '%s'", key);
+					break;
+				}
+				deps[dep_index]++;
+				if (printing) {
+					R_LOG_INFO ("-> %s", key);
+				}
 			}
-			const char *key = (const char *) cursor + path_offset;
-			size_t dep_index = (size_t)ht_su_find (path_to_idx, key, &found);
-			if (!found || dep_index >= cache->hdr->imagesCount) {
-				R_LOG_WARN ("alien dep '%s'", key);
-				goto nextcmd;
-			}
-			deps[dep_index]++;
-			if (printing) {
-				R_LOG_INFO ("-> %s", key);
-			}
+			break;
 		}
-nextcmd:
 		cursor += cmdsize;
 	}
 beach:
@@ -519,13 +555,14 @@ static void create_cache_bins(RBinFile *bf, RDyldCache *cache) {
 	int *deps = NULL;
 	char *target_libs = NULL;
 	RList *target_lib_names = NULL;
+	HtUP *bin_by_pa = NULL;
 
 	ut64 extras_count = 0;
 	cache_imgxtr_t *extras = NULL;
 	if (!bins) {
 		return;
 	}
-	HtUP *bin_by_pa = ht_up_new0 ();
+	bin_by_pa = ht_up_new0 ();
 	if (!bin_by_pa) {
 		goto end;
 	}
@@ -534,25 +571,23 @@ static void create_cache_bins(RBinFile *bf, RDyldCache *cache) {
 	if (target_libs) {
 		target_lib_names = r_str_split_list (target_libs, ":", 0);
 		if (!target_lib_names) {
-			r_list_free (bins);
-			return;
+			goto end;
 		}
 		deps = R_NEWS0 (int, cache->hdr->imagesCount);
 		if (!deps) {
-			r_list_free (bins);
-			r_list_free (target_lib_names);
-			return;
+			goto end;
 		}
 	} else {
 		R_LOG_INFO ("bin.dyldcache: Use R_DYLDCACHE_FILTER to specify a colon ':' separated list of names to avoid loading all the files in memory");
 	}
 
+	bool load_deps = !(r_sys_getenv_asbool ("R_DYLDCACHE_NO_DEPS"));
+
 	cache_img_t *img = NULL;
 	if (cache->images_are_global) {
 		img = read_cache_images (cache->buf, cache->hdr, 0);
 		if (!img) {
-			free (deps);
-			return;
+			goto end;
 		}
 	}
 
@@ -611,7 +646,7 @@ static void create_cache_bins(RBinFile *bf, RDyldCache *cache) {
 				R_FREE (lib_name);
 				deps[j]++;
 
-				if (extras && depArray && j < extras_count) {
+				if (load_deps && extras && depArray && j < extras_count) {
 					ut32 k;
 					for (k = extras[j].dependentsStartArrayIndex; k < depListCount && depArray[k] != 0xffff; k++) {
 						ut16 dep_index = depArray[k] & 0x7fff;
@@ -630,7 +665,7 @@ static void create_cache_bins(RBinFile *bf, RDyldCache *cache) {
 						}
 						free (dep_name);
 					}
-				} else if (path_to_idx) {
+				} else if (load_deps && path_to_idx) {
 					carve_deps_at_address (cache, img, path_to_idx, img[j].address, deps, printing);
 				}
 			}
@@ -1215,26 +1250,27 @@ static bool __is_data_section(const char *name) {
 		|| strstr (name, "_objc_methtype");
 }
 
-static void sections_from_bin(RList *ret, RBinFile *bf, RDyldBinImage *bin) {
+static bool sections_from_bin(RBinFile *bf, RDyldBinImage *bin) {
 	RDyldCache *cache = (RDyldCache*) bf->bo->bin_obj;
 	if (!cache) {
-		return;
+		return false;
 	}
 
 	struct MACH0_(obj_t) *mach0 = bin_to_mach0 (bf, bin);
 	if (!mach0) {
-		return;
+		return false;
 	}
 
 	const RVecSection *sections = MACH0_(load_sections) (mach0);
 	if (!sections) {
-		return;
+		MACH0_(mach0_free) (mach0);
+		return false;
 	}
 
 	ut64 slide = rebase_infos_get_slide (cache);
 	struct section_t *section;
 	R_VEC_FOREACH (sections, section) {
-		RBinSection *ptr = R_NEW0 (RBinSection);
+		RBinSection *ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 		if (bin->file) {
 			ptr->name = r_str_newf ("%s.%s", bin->file, (char*)section->name);
 		} else {
@@ -1253,21 +1289,17 @@ static void sections_from_bin(RList *ret, RBinFile *bf, RDyldBinImage *bin) {
 			ptr->vaddr = ptr->paddr;
 		}
 		ptr->perm = section->perm;
-		r_list_append (ret, ptr);
 	}
 	MACH0_(mach0_free) (mach0);
+	return true;
 }
 
-static RList *sections(RBinFile *bf) {
+static bool sections_vec(RBinFile *bf) {
 	RDyldCache *cache = (RDyldCache*) bf->bo->bin_obj;
 	if (!cache) {
-		return NULL;
+		return false;
 	}
-
-	RList *ret = r_list_newf (free);
-	if (!ret) {
-		return NULL;
-	}
+	RVecRBinSection_clear (&bf->bo->sections_vec);
 
 	RListIter *iter;
 	RDyldBinImage *bin;
@@ -1280,12 +1312,14 @@ static RList *sections(RBinFile *bf) {
 			R_LOG_INFO ("Parsing sections stopped %d / %d", i, r_list_length (cache->bins));
 			break;
 		}
-		sections_from_bin (ret, bf, bin);
+		if (!sections_from_bin (bf, bin)) {
+			return false;
+		}
 	}
 
 	RBinSection *ptr = NULL;
 	for (i = 0; i < cache->n_maps; i++) {
-		ptr = R_NEW0 (RBinSection);
+		ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 		ptr->name = r_str_newf ("cache_map.%d", i);
 		ptr->size = cache->maps[i].size;
 		ptr->vsize = ptr->size;
@@ -1294,13 +1328,12 @@ static RList *sections(RBinFile *bf) {
 		ptr->add = true;
 		ptr->is_segment = true;
 		ptr->perm = prot2perm (cache->maps[i].initProt);
-		r_list_append (ret, ptr);
 	}
 
 	ut64 slide = rebase_infos_get_slide (cache);
 	if (slide) {
 		RBinSection *section;
-		r_list_foreach (ret, iter, section) {
+		R_VEC_FOREACH (&bf->bo->sections_vec, section) {
 			section->vaddr += slide;
 		}
 	}
@@ -1332,7 +1365,7 @@ static RList *sections(RBinFile *bf) {
 			}
 		}
 
-		ptr = R_NEW0 (RBinSection);
+		ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 		ptr->name = r_str_newf ("STUBS_ISLAND.%d", j++);
 		ptr->size = first_map->size - 0x4000;
 		ptr->vsize = ptr->size;
@@ -1341,10 +1374,9 @@ static RList *sections(RBinFile *bf) {
 		ptr->add = true;
 		ptr->is_segment = false;
 		ptr->perm = prot2perm (first_map->initProt);
-		r_list_append (ret, ptr);
 	}
 
-	return ret;
+	return true;
 }
 
 static bool symbols_vec(RBinFile *bf) {
@@ -1651,7 +1683,7 @@ RBinPlugin r_bin_plugin_dyldcache = {
 	.entries = &entries,
 	.baddr = &baddr,
 	.symbols_vec = &symbols_vec,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.minstrlen = 5,
 	.check = &check,
 	.destroy = &destroy,

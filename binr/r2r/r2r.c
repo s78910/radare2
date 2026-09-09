@@ -97,6 +97,7 @@ static void helpvars(int workers_count) {
 		"R2R_JOBS=%d       # maximum parallel jobs\n"
 		"R2R_TIMEOUT=%d    # timeout after 1 minute (60 * 60)\n"
 		"R2R_OFFLINE=0       # same as passing -u\n"
+		"R2R_NETWORK=0       # run tests marked REQUIRE=network\n"
 		"R2R_SHALLOW=0       # skip 0-100%% random tests\n"
 		"R2R_RADARE2=radare2 # path to radare2 for the cmd tests\n",
 		workers_count,
@@ -598,6 +599,7 @@ static void r2r_state_fini(R2RState *state) {
 	r_th_cond_free (state->cond);
 	free (state->run_config.r2_cmd);
 	free (state->run_config.rasm2_cmd);
+	free (state->run_config.rasm2_archs);
 }
 
 // Returns: 0 = success, -1 = error, 1 = special exit (e.g., .c file handling)
@@ -1177,7 +1179,7 @@ static bool r2r_run_workers(R2RState *state, R2ROptions *opt) {
 		if (completed == RVecR2RTestPtr_length (&state->db->tests)) {
 			break;
 		}
-		r_th_cond_wait (state->cond, state->lock);
+		r_th_cond_wait (state->cond, state->lock, 0);
 	}
 
 	r_th_lock_leave (state->lock);
@@ -1206,6 +1208,7 @@ int main(int argc, char **argv) {
 		GetConsoleMode (streams[i], &mode);
 		SetConsoleMode (streams[i], mode | mode_flags);
 	}
+	r_w32_init ();
 #endif
 	R2ROptions opt = r2r_options_init ();
 	R2RState state = { 0 };
@@ -1256,6 +1259,7 @@ int main(int argc, char **argv) {
 		goto cleanup;
 	}
 	atexit (r2r_subprocess_fini);
+	r2r_archs (&state.run_config);
 
 	int load_result = r2r_load_tests (&state, &opt, arg_ind, argc, argv, cwd);
 	free (cwd);

@@ -8,7 +8,7 @@ static bool check(RBinFile *bf, RBuffer *b) {
 	if (length < 2) {
 		return false;
 	}
-	ut16 idx = r_buf_read_le16_at (b, 0x3c);
+	ut32 idx = r_buf_read_le32_at (b, 0x3c);
 	if ((ut64)idx + 26 < length) {
 		ut8 buf[2];
 		r_buf_read_at (b, 0, buf, sizeof (buf));
@@ -103,10 +103,6 @@ static char *header(RBinFile *bf, int mode) {
 	return r_strbuf_drain (sb);
 }
 
-static RList *sections(RBinFile *bf) {
-	return r_bin_le_get_sections (bf->bo->bin_obj);
-}
-
 static RList *entries(RBinFile *bf) {
 	return r_bin_le_get_entrypoints (bf->bo->bin_obj);
 }
@@ -125,45 +121,27 @@ static RList *libs(RBinFile *bf) {
 	return r_bin_le_get_libs (bf->bo->bin_obj);
 }
 
-static RList *relocs(RBinFile *bf) {
+static RVecRBinReloc *relocs(RBinFile *bf) {
 	return r_bin_le_get_relocs (bf->bo->bin_obj);
 }
 
-static RList* patch_relocs(RBinFile * bf) {
-	RList *ret = r_list_newf ((RListFree)free);
+static RVecRBinReloc *patch_relocs(RBinFile * bf) {
 	RBin *b = bf->rbin;
 	RBinLEObj *bin = bf->bo->bin_obj;
 	LE_image_header *h = bin->header;
 
-	RList * all_relocs = relocs (bf);
-	if (all_relocs == NULL) {
-		goto beach;
+	RVecRBinReloc *all_relocs = relocs (bf);
+	if (!all_relocs) {
+		return NULL;
 	}
-
-	RListIter * it;
-	RBinReloc * original;
-
-	r_list_foreach (all_relocs, it, original) {
+	RVecRBinReloc *ret = RVecRBinReloc_new ();
+	RBinReloc *original;
+	R_VEC_FOREACH (all_relocs, original) {
 		if (original->import || original->symbol) {
 			continue;
 		}
-
-		RBinReloc * r = R_NEW0 (RBinReloc);
-		if (!r) {
-			break;
-		}
-
-		r->import = NULL;
-		r->symbol = NULL;
-		r->is_ifunc = false;
-		r->vaddr = original->vaddr;
-		r->paddr = original->paddr;
-		r->laddr = original->laddr;
-		r->addend = original->addend;
-		r->type = original->type;
-		r->ntype = original->ntype;
-
-		r_list_append (ret, r);
+		RBinReloc *r = RVecRBinReloc_emplace_back (ret);
+		*r = *original;
 
 		int size = 0, offset = 0;
 		ut8 buf[8] = {0};
@@ -196,16 +174,8 @@ static RList* patch_relocs(RBinFile * bf) {
 			}
 		}
 	}
-
-end:
-	r_list_free (all_relocs);
-
+	RVecRBinReloc_free (all_relocs);
 	return ret;
-
-beach:
-	r_list_free (ret);
-	ret = NULL;
-	goto end;
 }
 
 static RBinInfo *info(RBinFile *bf) {
@@ -224,6 +194,27 @@ static RBinInfo *info(RBinFile *bf) {
 	return info;
 }
 
+static bool sections_vec(RBinFile *bf) {
+	return r_bin_le_load_sections (bf->bo->bin_obj, &bf->bo->sections_vec);
+}
+
+static bool load_resources(RBinFile *bf) {
+	R_RETURN_VAL_IF_FAIL (bf && bf->bo, false);
+	RBinLEObj *bin = bf->bo->bin_obj;
+	if (!bin || !r_bin_le_load_resources (bin, &bf->bo->resources_vec)) {
+		return false;
+	}
+	RBinResource *resource;
+	R_VEC_FOREACH (&bf->bo->resources_vec, resource) {
+		ut64 paddr;
+		if (r_add_overflow (resource->paddr, bf->bo->loadaddr, &paddr)) {
+			return false;
+		}
+		resource->paddr = paddr;
+	}
+	return true;
+}
+
 RBinPlugin r_bin_plugin_le = {
 	.meta = {
 		.name = "le",
@@ -237,7 +228,8 @@ RBinPlugin r_bin_plugin_le = {
 	.destroy = &destroy,
 	.info = &info,
 	.header = &header,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
+	.load_resources = &load_resources,
 	.entries = &entries,
 	.symbols_vec = &symbols_vec,
 	.imports_vec = &imports_vec,

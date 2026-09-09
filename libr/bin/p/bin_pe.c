@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2009-2024 - nibble, pancake, alvarofe */
+/* radare - LGPL - Copyright 2009-2026 - nibble, pancake, alvarofe */
 
 #include "bin_pe.inc.c"
 #include "../format/pe/dotnet.h"
@@ -18,8 +18,8 @@ static bool check(RBinFile *bf, RBuffer *b) {
 			r_buf_read_at (b, idx, buf, sizeof (buf));
 		 	// PL signature for Phar Lap TNT DOS extender 32bit executables
 			if (!memcmp (buf, "PL", 2)) {
-				// TODO: Add one more indicator, to prevent false positives
-				return true;
+				r_buf_read_at (b, idx + 0x18, buf, sizeof (buf));
+				return !memcmp (buf, "\x0b\x01", 2);
 			}
 			if (!memcmp (buf, "PE", 2)) {
 				r_buf_read_at (b, idx + 0x18, buf, sizeof (buf));
@@ -180,7 +180,8 @@ static RList *fields(RBinFile *bf) {
 	int i;
 	ut64 tmp = addr;
 	for (i = 0; i < PE_IMAGE_DIRECTORY_ENTRIES - 1; i++) {
-		if (pe->nt_headers->optional_header.DataDirectory[i].Size > 0) {
+		if (pe->nt_headers->optional_header.DataDirectory[i].VirtualAddress ||
+			pe->nt_headers->optional_header.DataDirectory[i].Size) {
 			addr = tmp + i*8;
 			switch (i) {
 			case PE_IMAGE_DIRECTORY_ENTRY_EXPORT:
@@ -349,7 +350,8 @@ static char *header(RBinFile *bf, int mode) {
 	}
 	int i;
 	for (i = 0; i < PE_IMAGE_DIRECTORY_ENTRIES - 1; i++) {
-		if (pe->nt_headers->optional_header.DataDirectory[i].Size > 0) {
+		if (pe->nt_headers->optional_header.DataDirectory[i].VirtualAddress ||
+			pe->nt_headers->optional_header.DataDirectory[i].Size) {
 			switch (i) {
 			case PE_IMAGE_DIRECTORY_ENTRY_EXPORT:
 				p ("IMAGE_DIRECTORY_ENTRY_EXPORT\n");
@@ -446,13 +448,15 @@ RBinPlugin r_bin_plugin_pe = {
 	},
 	.get_sdb = &get_sdb,
 	.get_name = &getname,
+	.get_offset = &getoffset,
+	.get_cc = &get_cc,
 	.load = &load,
 	.destroy = &destroy,
 	.check = &check,
 	.baddr = &baddr,
 	.binsym = &binsym,
 	.entries = &entries,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.signature = &signature,
 	.symbols_vec = &symbols_vec,
 	.imports_vec = &imports_vec,
@@ -461,13 +465,16 @@ RBinPlugin r_bin_plugin_pe = {
 	.fields = &fields,
 	.classes = &classes,
 	.types = &types,
+	.strings = &strings,
 	.libs = &libs,
 	.relocs = relocs,
+	.trycatch = &pe_trycatch,
 	.minstrlen = 4,
 	.create = &create,
 	.get_vaddr = &get_vaddr,
 	.write = &r_bin_write_pe,
-	.hashes = &compute_hashes
+	.hashes = &compute_hashes,
+	.load_resources = &load_resources
 };
 
 #ifndef R2_PLUGIN_INCORE

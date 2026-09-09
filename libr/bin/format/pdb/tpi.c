@@ -1592,16 +1592,15 @@ static void get_array_print_type(STpiStream *ss, void *type, char **name) {
 
 	SType *t = NULL;
 	ti->get_element_type (ss, ti, (void **)&t);
-
-	// XXX asserts are bad
-	R_RETURN_IF_FAIL (t); // t == NULL indicates malformed PDB?
-	if (t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
+	if (t && t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
 		SLF_SIMPLE_TYPE *base_type = t->type_data.type_info;
 		tmp_name = strdup (base_type->type);
 		free_simple_type (t);
-	} else {
+	} else if (t) {
 		ti = &t->type_data;
-		ti->get_print_type (ss, ti, &tmp_name);
+		if (ti->get_print_type) {
+			ti->get_print_type (ss, ti, &tmp_name);
+		}
 	}
 	int size = 0;
 	if (ti->get_val) {
@@ -1617,14 +1616,15 @@ static void get_pointer_print_type(STpiStream *ss, void *type, char **name) {
 	char *tmp_name = NULL;
 
 	ti->get_utype (ss, ti, (void **)&t);
-	R_RETURN_IF_FAIL (t); // t == NULL indicates malformed PDB?
-	if (t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
+	if (t && t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
 		SLF_SIMPLE_TYPE *base_type = t->type_data.type_info;
 		tmp_name = strdup (base_type->type);
 		free_simple_type (t);
-	} else {
+	} else if (t) {
 		ti = &t->type_data;
-		ti->get_print_type (ss, ti, &tmp_name);
+		if (ti->get_print_type) {
+			ti->get_print_type (ss, ti, &tmp_name);
+		}
 	}
 	*name = r_str_newf ("%s*", tmp_name? tmp_name: "");
 	free (tmp_name);
@@ -1642,7 +1642,9 @@ static void get_modifier_print_type(STpiStream *ss, void *type, char **name) {
 		free_simple_type (stype);
 	} else if (stype) {
 		STypeInfo *refered_type_info = &stype->type_data;
-		refered_type_info->get_print_type (ss, refered_type_info, &tmp_name);
+		if (refered_type_info->get_print_type) {
+			refered_type_info->get_print_type (ss, refered_type_info, &tmp_name);
+		}
 	}
 	SLF_MODIFIER *modifier = stype_info->type_info;
 	*name = r_str_newf ("%s%s%s%s",
@@ -1664,13 +1666,15 @@ static void get_bitfield_print_type(STpiStream *ss, void *type, char **name) {
 	SLF_BITFIELD *bitfeild_info = (SLF_BITFIELD *)ti->type_info;
 
 	ti->get_base_type (ss, ti, (void **)&t);
-	if (t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
+	if (t && t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
 		SLF_SIMPLE_TYPE *base_type = t->type_data.type_info;
 		tmp_name = strdup (base_type->type);
 		free_simple_type (t);
-	} else {
+	} else if (t) {
 		ti = &t->type_data;
-		ti->get_print_type (ss, ti, &tmp_name);
+		if (ti->get_print_type) {
+			ti->get_print_type (ss, ti, &tmp_name);
+		}
 	}
 
 	*name = r_str_newf ("bitfield%s%s : %d",
@@ -1690,14 +1694,15 @@ static void get_enum_print_type(STpiStream *ss, void *type, char **name) {
 	char *tmp_name = NULL;
 
 	ti->get_utype (ss, ti, (void **)&t);
-	R_RETURN_IF_FAIL (t); // This shouldn't happen?, TODO explore this situation
-	if (t->type_data.leaf_type == eLF_SIMPLE_TYPE) { // BaseType
+	if (t && t->type_data.leaf_type == eLF_SIMPLE_TYPE) { // BaseType
 		SLF_SIMPLE_TYPE *base_type = t->type_data.type_info;
 		tmp_name = strdup (base_type->type);
 		free_simple_type (t);
-	} else {
+	} else if (t) {
 		ti = &t->type_data;
-		ti->get_print_type (ss, ti, &tmp_name);
+		if (ti->get_print_type) {
+			ti->get_print_type (ss, ti, &tmp_name);
+		}
 	}
 
 	*name = r_str_newf ("enum %s", tmp_name? tmp_name: "");
@@ -1775,17 +1780,14 @@ static void get_nesttype_print_type(STpiStream *ss, void *type, char **name) {
 	char *tmp_name = 0;
 
 	ti->get_index (ss, ti, (void **)&t);
-	if (t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
+	if (t && t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
 		SLF_SIMPLE_TYPE *base_type = t->type_data.type_info;
 		tmp_name = strdup (base_type->type);
 		free_simple_type (t);
-	} else {
+	} else if (t) {
 		ti = &t->type_data;
 		if (ti->get_print_type) {
 			ti->get_print_type (ss, ti, &tmp_name);
-		} else {
-			// TODO: this shouldnt happen because it means corrupted or invalid type
-			// R_LOG_WARN ("strange for nesttype");
 		}
 	}
 
@@ -1806,17 +1808,17 @@ static void get_member_print_type(STpiStream *ss, void *type, char **name) {
 	char *tmp_name = NULL;
 
 	ti->get_index (ss, ti, (void **)&t);
-	if (t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
+	if (t && t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
 		SLF_SIMPLE_TYPE *base_type = t->type_data.type_info;
 		tmp_name = strdup (base_type->type);
 		free_simple_type (t);
-	} else {
+	} else if (t) {
 		ti = &t->type_data;
-		ti->get_print_type (ss, ti, &tmp_name);
+		if (ti->get_print_type) {
+			ti->get_print_type (ss, ti, &tmp_name);
+		}
 	}
-	if (tmp_name) {
-		*name = tmp_name;
-	}
+	*name = tmp_name? tmp_name: strdup ("unknown_t");
 }
 
 static void get_onemethod_print_type(STpiStream *ss, void *type, char **name) {
@@ -1825,13 +1827,15 @@ static void get_onemethod_print_type(STpiStream *ss, void *type, char **name) {
 	char *tmp_name = NULL;
 
 	ti->get_index (ss, ti, (void **)&t);
-	if (t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
+	if (t && t->type_data.leaf_type == eLF_SIMPLE_TYPE) {
 		SLF_SIMPLE_TYPE *base_type = t->type_data.type_info;
 		tmp_name = strdup (base_type->type);
 		free_simple_type (t);
-	} else {
+	} else if (t) {
 		ti = &t->type_data;
-		ti->get_print_type (ss, ti, &tmp_name);
+		if (ti->get_print_type) {
+			ti->get_print_type (ss, ti, &tmp_name);
+		}
 	}
 
 	*name = r_str_newf ("onemethod %s", tmp_name? tmp_name: "");
@@ -2605,7 +2609,7 @@ static int parse_tpi_stypes(R_STREAM_FILE *stream, SType *type) {
 	uint8_t *leaf_data;
 	unsigned int read_bytes = 0;
 
-	stream_file_read (stream, 2, (char *)&type->length);
+	type->length = stream_file_read_le16 (stream);
 	if (type->length < 2) {
 		return 0;
 	}
@@ -2684,7 +2688,21 @@ static int parse_tpi_stypes(R_STREAM_FILE *stream, SType *type) {
 bool parse_tpi_stream(STpiStream *ss, R_STREAM_FILE *stream) {
 	ss->types = r_list_new ();
 	// Initialize context for parsing session
-	stream_file_read (stream, sizeof (STPIHeader), (char *)&ss->header);
+	ss->header.version = stream_file_read_le32 (stream);
+	ss->header.hdr_size = stream_file_read_le32 (stream);
+	ss->header.idx_begin = stream_file_read_le32 (stream);
+	ss->header.idx_end = stream_file_read_le32 (stream);
+	ss->header.follow_size = stream_file_read_le32 (stream);
+	ss->header.tpi.hash_stream_idx = stream_file_read_le16 (stream);
+	ss->header.tpi.hash_aux_stream_idx = stream_file_read_le16 (stream);
+	ss->header.tpi.hash_key_size = stream_file_read_sle32 (stream);
+	ss->header.tpi.buckets = stream_file_read_sle32 (stream);
+	ss->header.tpi.hash_val.offset = stream_file_read_sle32 (stream);
+	ss->header.tpi.hash_val.buff_len = stream_file_read_le32 (stream);
+	ss->header.tpi.idx_off.offset = stream_file_read_sle32 (stream);
+	ss->header.tpi.idx_off.buff_len = stream_file_read_le32 (stream);
+	ss->header.tpi.hash_adj.offset = stream_file_read_sle32 (stream);
+	ss->header.tpi.hash_adj.buff_len = stream_file_read_le32 (stream);
 	if (stream->error) {
 		return false;
 	}

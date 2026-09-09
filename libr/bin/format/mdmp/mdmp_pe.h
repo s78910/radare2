@@ -17,8 +17,8 @@ typedef struct PE_(r_bin_mdmp_pe_bin) {
 } PE_(RBinMdmp);
 
 RList *PE_(r_bin_mdmp_pe_get_entrypoint)(PE_(RBinMdmp) *mdmp);
-void PE_(r_bin_mdmp_pe_load_imports)(PE_(RBinMdmp) *mdmp, RVecRBinImport *vec);
-RList *PE_(r_bin_mdmp_pe_get_sections)(PE_(RBinMdmp) *mdmp);
+void PE_(r_bin_mdmp_pe_load_imports)(PE_(RBinMdmp) *mdmp, RVecRBinImport *vec, RVecRBinReloc *relocs);
+void PE_(r_bin_mdmp_pe_load_sections)(PE_(RBinMdmp) *mdmp, RVecRBinSection *vec);
 void PE_(r_bin_mdmp_pe_load_symbols)(RBin *rbin, PE_(RBinMdmp) *mdmp, RVecRBinSymbol *vec);
 
 #endif /* MDMP_PE_H */

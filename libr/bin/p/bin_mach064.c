@@ -298,8 +298,9 @@ RBinPlugin r_bin_plugin_mach064 = {
 	.baddr = &baddr,
 	.binsym = binsym,
 	.entries = &entries,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.signature = &entitlements,
+	.load_resources = &load_resources,
 	.symbols_vec = &symbols_vec,
 	.imports_vec = &imports_vec,
 	.info = &info,
@@ -310,6 +311,7 @@ RBinPlugin r_bin_plugin_mach064 = {
 	.fields = &MACH0_(mach_fields),
 	.create = &create,
 	.classes = &classes,
+	.trycatch = &trycatch,
 	.write = &r_bin_write_mach064,
 };
 

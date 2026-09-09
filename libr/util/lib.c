@@ -7,8 +7,9 @@ R_LIB_VERSION (r_lib);
 
 /* XXX : this must be registered at runtime instead of hardcoded */
 static const char *const r_lib_types[] = {
-	"io", "dbg", "lang", "asm", "anal", "parse", "bin", "bin_xtr", "bin_ldr",
-	"bp", "syscall", "fastcall", "muta", "core", "egg", "fs", "arch", NULL
+	"io", "dbg", "lang", "asm", "anal", "bin", "bin_xtr", "bin_ldr",
+	"bp", "syscall", "fastcall", "crypto", "core", "egg", "fs", "esil",
+	"arch", "muta", "bin_demangle", NULL
 };
 
 R_API void *r_lib_dl_open(const char *libname, bool safe_mode) {
@@ -186,6 +187,7 @@ R_API RLib *r_lib_new(const char *symname, const char *symnamefunc) {
 	lib->abiversion = R2_ABIVERSION;
 	lib->handlers = r_list_newf (free);
 	lib->plugins = r_list_newf (free);
+	lib->plugin_mismatches = r_list_newf (free);
 	int i;
 	for (i = 0; i < R_LIB_TYPE_LAST; i++) {
 		lib->handlers_bytype[i] = NULL;
@@ -201,6 +203,7 @@ R_API void r_lib_free(RLib * R_NULLABLE lib) {
 		r_lib_close (lib, NULL);
 		r_list_free (lib->handlers);
 		r_list_free (lib->plugins);
+		r_list_free (lib->plugin_mismatches);
 		int i;
 		for (i = 0; i < R_LIB_TYPE_LAST; i++) {
 			ht_pp_free (lib->plugins_ht[i]);
@@ -297,6 +300,13 @@ static bool already_loaded(RLib *lib, const char *name, int type) {
 }
 
 R_API bool r_lib_open(RLib *lib, const char *file) {
+	if (r_str_endswith (file, ".r2so")) {
+		char *libpath = r_str_newf ("%.*s%s",
+			(int)strlen (file) - 4, file, R_LIB_EXT);
+		const bool res = r_lib_open (lib, libpath);
+		free (libpath);
+		return res;
+	}
 	/* ignored by filename */
 	if (!check_filename (file)) {
 		R_LOG_ERROR ("Invalid library extension: %s", file);
@@ -413,10 +423,13 @@ R_API bool r_lib_validate_plugin(RLib *lib, const char *file, RLibStruct *stru) 
 	// Check ABI compatibility
 	if (stru->abiversion && !lib->ignore_abiversion) {
 		if (stru->abiversion != lib->abiversion) {
-			R_LOG_WARN ("ABI mismatch: Expect %d vs %d from '%s')",
-					lib->abiversion, stru->abiversion, file);
-			if (stru->pkgname) {
-				R_LOG_INFO ("Run: r2pm -ci %s", stru->pkgname);
+			if (R_STR_ISNOTEMPTY (stru->pkgname)) {
+				R_LOG_WARN ("ABI mismatch: Expect %d vs %d from '%s' (run: r2pm -ci %s, or set scr.prompt.r2pm=true)",
+						lib->abiversion, stru->abiversion, file, stru->pkgname);
+				r_list_append (lib->plugin_mismatches, strdup (stru->pkgname));
+			} else {
+				R_LOG_WARN ("ABI mismatch: Expect %d vs %d from '%s'",
+						lib->abiversion, stru->abiversion, file);
 			}
 			return false;
 		}
@@ -428,15 +441,16 @@ R_API bool r_lib_validate_plugin(RLib *lib, const char *file, RLibStruct *stru) 
 		free (mm0);
 		free (mm1);
 		if (mismatch) {
-			R_LOG_WARN ("Module version mismatch %s (%s) vs (%s)", file, stru->version, R2_VERSION);
 			const char *dot = strchr (stru->version, '.');
 			int major = atoi (stru->version);
 			int minor = dot ? atoi (dot + 1) : 0;
 			// The pkgname member was introduced in 4.2.0
-			if (major > 4 || (major == 4 && minor >= 2)) {
-				if (stru->pkgname) {
-					printf ("r2pm -ci %s\n", stru->pkgname);
-				}
+			if (R_STR_ISNOTEMPTY (stru->pkgname) && (major > 4 || (major == 4 && minor >= 2))) {
+				R_LOG_WARN ("Module version mismatch %s (%s) vs (%s) (run: r2pm -ci %s, or set scr.prompt.r2pm=true)",
+						file, stru->version, R2_VERSION, stru->pkgname);
+				r_list_append (lib->plugin_mismatches, strdup (stru->pkgname));
+			} else {
+				R_LOG_WARN ("Module version mismatch %s (%s) vs (%s)", file, stru->version, R2_VERSION);
 			}
 			return false;
 		}
@@ -444,7 +458,6 @@ R_API bool r_lib_validate_plugin(RLib *lib, const char *file, RLibStruct *stru) 
 
 	return true;
 }
-
 
 R_API bool r_lib_open_ptr(RLib *lib, const char *file, void *handle, RLibStruct *stru) {
 	R_RETURN_VAL_IF_FAIL (lib && file && stru, false);

@@ -158,7 +158,6 @@ static void esil2c_mr(void *user R_UNUSED, ut64 addr, const ut8 *buf R_UNUSED, i
 
 static void esil2c_setup(REsil *esil) {
 	R_RETURN_IF_FAIL (esil);
-	esil->verbose = true; // r_config_get_b (core->config, "esil.verbose");
 	r_esil_add_voyeur (esil, NULL, esil2c_mw, R_ESIL_VOYEUR_MEM_WRITE);
 	r_esil_add_voyeur (esil, NULL, esil2c_mr, R_ESIL_VOYEUR_MEM_READ);
 	r_esil_set_op (esil, "=", esil2c_eq, 0, 2, R_ESIL_OP_TYPE_REG_WRITE, NULL);
@@ -182,7 +181,9 @@ static void esil2c_setup(REsil *esil) {
 R_API REsilC *r_esil_toc_new(RAnal *anal, const int bits) {
 	R_RETURN_VAL_IF_FAIL (anal, NULL);
 	REsilC *ec = R_NEW0 (REsilC);
-	REsil *esil = r_esil_new_simple (bits, anal->reg, &anal->iob);
+	REsilOptions opt = r_esil_options (anal->reg, &anal->iob);
+	opt.addrsize = bits;
+	REsil *esil = r_esil_new (&opt);
 	if (esil) {
 		esil->anal = anal;
 		esil->user = ec;

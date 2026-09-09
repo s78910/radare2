@@ -61,7 +61,7 @@ R_API bool r_debug_trace_ins_before(RDebug *dbg) {
 	if (!dbg->iob.read_at) {
 		return false;
 	}
-	if (!dbg->iob.read_at (dbg->iob.io, pc, buf_pc, sizeof (buf_pc))) {
+	if (dbg->iob.read_at (dbg->iob.io, pc, buf_pc, sizeof (buf_pc)) != sizeof (buf_pc)) {
 		return false;
 	}
 	dbg->cur_op = R_NEW0 (RAnalOp);
@@ -146,7 +146,7 @@ R_API bool r_debug_trace_ins_after(RDebug *dbg) {
 		case R_ANAL_VAL_MEM:
 		{
 			ut8 buf[32] = {0};
-			if (!dbg->iob.read_at (dbg->iob.io, val->base, buf, val->memref)) {
+			if (dbg->iob.read_at (dbg->iob.io, val->base, buf, val->memref) != val->memref) {
 				R_LOG_ERROR ("reading memory at 0x%"PFMT64x, val->base);
 				break;
 			}
@@ -179,7 +179,7 @@ R_API bool r_debug_trace_pc(RDebug *dbg, ut64 pc) {
 		return false;
 	}
 	int res = dbg->iob.read_at (dbg->iob.io, pc, buf, sizeof (buf));
-	if (res > 0 && r_anal_op (dbg->anal, &op, pc, buf, sizeof (buf), R_ARCH_OP_MASK_ESIL) < 1) {
+	if (res < 1 || r_anal_op (dbg->anal, &op, pc, buf, res, R_ARCH_OP_MASK_ESIL) < 1) {
 		R_LOG_ERROR ("trace_pc: cannot get opcode size at 0x%"PFMT64x, pc);
 		return false;
 	}
@@ -288,9 +288,8 @@ static void r_debug_trace_list_table(RDebug *dbg, ut64 offset, RTable *t) {
 
 	if (flag) {
 		RVecListInfo_sort (&info_vec, cmpaddr);
-		RTable *table = t? t: r_table_new ("traces");
 		RCore *core = (RCore *)dbg->coreb.core;
-		table->cons = core->cons;
+		RTable *table = t? t: r_table_new ("traces", NULL);
 		RIO *io = dbg->iob.io;
 		r_table_visual_vec (table, &info_vec, offset, 1, r_cons_get_size (core->cons, NULL), io->va);
 		char *s = r_table_tostring (table);

@@ -39,9 +39,22 @@ static int replace(int argc, const char *argv[], char *newstr) {
 		{ "st", "2 = .byte 1", 2},
 		{ "sla", "3 = 1 << 2", 3},
 		{ "sll", "3 = 1 << 2", 3},
-		{ "be", "if equal goto 1", 1},
-		{ "bne", "if not_equal goto 1", 1},
-		{ "cmp", "compare 1, 2", 2},
+		{ "cmp", "v = 1 - 2", 2},
+		{ "ba", "goto 1", 1},
+		{ "be", "if (!v) goto 1", 1},
+		{ "bne", "if (v) goto 1", 1},
+		{ "bg", "if (v > 0) goto 1", 1},
+		{ "bge", "if (v >= 0) goto 1", 1},
+		{ "bl", "if (v < 0) goto 1", 1},
+		{ "ble", "if (v <= 0) goto 1", 1},
+		{ "bgu", "if (((unsigned) v) > 0) goto 1", 1},
+		{ "bcc", "if (((unsigned) v) >= 0) goto 1", 1},
+		{ "bcs", "if (((unsigned) v) < 0) goto 1", 1},
+		{ "bleu", "if (((unsigned) v) <= 0) goto 1", 1},
+		{ "bpos", "if (v >= 0) goto 1", 1},
+		{ "bneg", "if (v < 0) goto 1", 1},
+		{ "bvs", "if (overflow) goto 1", 1},
+		{ "bvc", "if (!overflow) goto 1", 1},
 		{ "nop", ""},
 		{ "ret", "return", 0},
 #if 0
@@ -50,8 +63,20 @@ static int replace(int argc, const char *argv[], char *newstr) {
 		{ NULL }
 	};
 
+	// hints (be,a be,pn) and the v9 cc (bne xcc, x) keep the condition
+	char mn[16];
+	r_str_ncpy (mn, argv[0], sizeof (mn));
+	char *hint = strchr (mn, ',');
+	if (hint) {
+		*hint = 0;
+	}
+	const char *branch[2] = { mn, argv[argc - 1] };
+	const bool cc = argc == 3 && mn[0] == 'b' && r_str_endswith (argv[1], "cc");
 	for (i = 0; ops[i].op; i++) {
-		if (!strcmp (ops[i].op, argv[0])) {
+		if (!strcmp (ops[i].op, mn)) {
+			if (cc) {
+				argv = branch;
+			}
 			if (newstr) {
 				for (j = k = 0; ops[i].str[j] != '\0'; j++, k++) {
 					if (can_replace (ops[i].str, j, ops[i].max_operands)) {
@@ -92,7 +117,7 @@ static int replace(int argc, const char *argv[], char *newstr) {
 #define WSZ 64
 
 static char *parse(RAsmPluginSession *aps, const char *data) {
-	int i, len = strlen (data);
+	int len = strlen (data);
 	char w0[WSZ];
 	char w1[WSZ];
 	char w2[WSZ];
@@ -131,8 +156,8 @@ static char *parse(RAsmPluginSession *aps, const char *data) {
 			for (ptr++; *ptr == ' '; ptr++) {
 				;
 			}
-			strncpy (w0, buf, WSZ - 1);
-			strncpy (w1, ptr, WSZ - 1);
+			r_str_ncpy (w0, buf, WSZ);
+			r_str_ncpy (w1, ptr, WSZ);
 
 			optr=ptr;
 			ptr = strchr (ptr, ',');
@@ -141,8 +166,8 @@ static char *parse(RAsmPluginSession *aps, const char *data) {
 				for (ptr++; *ptr == ' '; ptr++) {
 					;
 				}
-				strncpy (w1, optr, WSZ - 1);
-				strncpy (w2, ptr, WSZ - 1);
+				r_str_ncpy (w1, optr, WSZ);
+				r_str_ncpy (w2, ptr, WSZ);
 				optr = ptr;
 				ptr = strchr (ptr, ',');
 				if (ptr) {
@@ -150,8 +175,8 @@ static char *parse(RAsmPluginSession *aps, const char *data) {
 					for (ptr++; *ptr == ' '; ptr++) {
 						;
 					}
-					strncpy (w2, optr, WSZ - 1);
-					strncpy (w3, ptr, WSZ - 1);
+					r_str_ncpy (w2, optr, WSZ);
+					r_str_ncpy (w3, ptr, WSZ);
 					optr=ptr;
 // bonus
 					ptr = strchr (ptr, ',');
@@ -160,18 +185,18 @@ static char *parse(RAsmPluginSession *aps, const char *data) {
 						for (ptr++; *ptr == ' '; ptr++) {
 							;
 						}
-						strncpy (w3, optr, WSZ - 1);
-						strncpy (w4, ptr, WSZ - 1);
+						r_str_ncpy (w3, optr, WSZ);
+						r_str_ncpy (w4, ptr, WSZ);
 					}
 				}
 			}
 		} else {
-			strncpy (w0, buf, WSZ - 1);
+			r_str_ncpy (w0, buf, WSZ);
 		}
 		{
 			const char *wa[] = { w0, w1, w2, w3, w4 };
-			int nw = 0;
-			for (i = 0; i < 4; i++) {
+			size_t i, nw = 0;
+			for (i = 0; i < R_ARRAY_SIZE (wa); i++) {
 				if (wa[i][0] != '\0') {
 					nw++;
 				}
@@ -200,7 +225,6 @@ static char *parse(RAsmPluginSession *aps, const char *data) {
 					REPLACE ("%s = %s >>", "%s >>=");
 					REPLACE ("%s = %s <<", "%s <<=");
 				}
-				p = r_str_replace (p, ":", "0000", 0);
 				strcpy (str, p);
 				free (p);
 			}

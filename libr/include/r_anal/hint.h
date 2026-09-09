@@ -21,7 +21,9 @@ typedef enum r_anal_addr_hint_type_t {
 	R_ANAL_ADDR_HINT_TYPE_TYPE_OFFSET,
 	R_ANAL_ADDR_HINT_TYPE_ESIL,
 	R_ANAL_ADDR_HINT_TYPE_HIGH,
-	R_ANAL_ADDR_HINT_TYPE_VAL
+	R_ANAL_ADDR_HINT_TYPE_VAL,
+	R_ANAL_ADDR_HINT_TYPE_ENUM,
+	R_ANAL_ADDR_HINT_TYPE_REGUSE
 } RAnalAddrHintType;
 
 typedef struct r_anal_addr_hint_record_t {
@@ -42,6 +44,8 @@ typedef struct r_anal_addr_hint_record_t {
 		ut64 size;
 		ut64 stackframe;
 		ut64 val;
+		char *enum_name;
+		char *reguse;
 	};
 } RAnalAddrHintRecord;
 
@@ -65,6 +69,8 @@ typedef struct r_anal_hint_t {
 	bool high; // highlight hint
 	int nword;
 	ut64 stackframe;
+	char *enum_name;
+	char *reguse;
 } RAnalHint;
 
 #ifdef __cplusplus
@@ -72,4 +78,3 @@ typedef struct r_anal_hint_t {
 #endif
 
 #endif
-

@@ -139,11 +139,9 @@ RBinPlugin r_bin_plugin_elf64 = {
 	.baddr = &baddr,
 	.binsym = &binsym,
 	.entries = &entries,
-#if R2_590
+	.load_resources = &load_resources,
 	.sections_vec = &sections_vec,
-#else
-	.sections = &sections,
-#endif
+	.classes = &swift_classes,
 	.symbols_vec = symbols_vec,
 	.imports_vec = &imports_vec,
 	.minstrlen = 4,
@@ -154,6 +152,7 @@ RBinPlugin r_bin_plugin_elf64 = {
 	.libs = &libs,
 	.relocs = &relocs,
 	.patch_relocs = &patch_relocs,
+	.trycatch = &trycatch,
 //	.dbginfo = &r_bin_dbginfo_elf64,
 	.create = &create,
 	.write = &r_bin_write_elf64,

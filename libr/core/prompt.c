@@ -371,7 +371,7 @@ R_API void r_core_prompt_format_help(RCore *core) {
 // 		"Example:", "scr.prompt.format = \"${GREEN}${filename}${RESET} [${addr}]> \"",
 		NULL
 	};
-	r_core_cmd_help (core, help_msg);
+	r_cons_cmd_help (core->cons, help_msg);
 }
 
 R_API char *r_core_prompt_format(RCore *core, const char *fmt) {
@@ -405,5 +405,14 @@ R_API char *r_core_prompt_format(RCore *core, const char *fmt) {
 			p++;
 		}
 	}
-	return r_strbuf_drain (sb);
+	char *prompt = r_strbuf_drain (sb);
+	const char *font = (core && core->config)? r_config_get (core->config, "scr.font.prompt"): NULL;
+	if (R_STR_ISNOTEMPTY (font)) {
+		char *rendered = r_font_render (prompt, font);
+		if (rendered) {
+			free (prompt);
+			return rendered;
+		}
+	}
+	return prompt;
 }

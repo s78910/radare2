@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2017-2022 - pancake, xvilka, deroad */
+/* radare2 - LGPL - Copyright 2017-2026 - pancake, xvilka, deroad */
 
 #define R_LOG_ORIGIN "anal.wasm"
 
@@ -8,6 +8,13 @@
 #include <r_bin.h>
 #include "wasm.h"
 #include "wasm.c"
+
+#define WASM_MIN_REGS 16
+#define WASM_MIN_REG_LOCALS 16
+#define WASM_MAX_REG_LOCALS UT16_MAX
+#define WASM_REG_OFFSET 12
+#define WASM_REG_SIZE 4
+#define WASM_LOCAL_REG_OFFSET (WASM_REG_OFFSET + WASM_MIN_REGS * WASM_REG_SIZE)
 
 typedef struct wasm_cf_scope {
 	ut64 addr, jump, fail;
@@ -281,10 +288,11 @@ static inline bool parse_control_flow(RArchSession *s, ut64 opaddr) {
 		ut8 buffer[16];
 		ut8 *ptr = buffer;
 		ut32 readsize = R_MIN (sizeof (buffer), len);
+		int nread;
 
 		// TODO: bigger and fewer reads to speed up
-		while (readsize && read_at (bin->iob.io, addr, buffer, readsize)) {
-			int size = wasm_dis (&wop, ptr, readsize, false);
+		while (readsize && (nread = read_at (bin->iob.io, addr, buffer, readsize)) > 0) {
+			int size = wasm_dis (&wop, ptr, nread, false);
 			if (!parse_op_cf (scope, keep, addr, &wop, &lastcf)) {
 				break;
 			}
@@ -402,6 +410,9 @@ static bool wasm_decode(RArchSession *s, RAnalOp *op, RArchDecodeMask mask) {
 		break;
 	case WASM_TYPE_OP_SIMD:
 		op->id = 0xfd;
+		break;
+	case WASM_TYPE_OP_MISC:
+		op->id = (0xfc << 8) | wop.op.misc;
 		break;
 	}
 
@@ -632,6 +643,13 @@ static int archinfo(RAnal *a, int q) {
 }
 #endif
 
+static int wasm_info(RArchSession *as, ut32 q) {
+	if (q == R_ARCH_INFO_ISVM) {
+		return R_ARCH_INFO_ISVM;
+	}
+	return -1;
+}
+
 static char *wasm_regs(RArchSession *ai) {
 	return strdup (
 		"=PC	pc\n"
@@ -641,9 +659,11 @@ static char *wasm_regs(RArchSession *ai) {
 		"=A0	r0\n"
 		"=A1	r1\n"
 		"=A2	r2\n"
-		"gpr	sp	.32	0	0\n" // stack pointer
-		"gpr	pc	.32	4	0\n" // program counter
-		"gpr	bp	.32	8	0\n" // base pointer // unused
+		"gpr	sp	.32	0	0\n"  // stack pointer
+		"gpr	pc	.32	4	0\n"  // program counter
+		"gpr	bp	.32	8	0\n"  // base pointer // unused
+		"gpr	r[16]	.32	12	0\n" // argument/return register bank
+		"gpr	l[1024]	.32	$	0\n" // locals bank
 	);
 }
 
@@ -672,6 +692,7 @@ const RArchPlugin r_arch_plugin_wasm = {
 	},
 	.arch = "wasm",
 	.bits = R_SYS_BITS_PACK2 (32,64),
+	.info = wasm_info,
 	.regs = wasm_regs,
 	.decode = wasm_decode,
 	.encode = wasm_encode,

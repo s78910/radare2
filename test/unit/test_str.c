@@ -1,6 +1,16 @@
 #include <r_util.h>
 #include "minunit.h"
 
+static int count_substr(const char *s, const char *needle) {
+	const size_t nlen = strlen (needle);
+	int n = 0;
+	while (s && (s = strstr (s, needle))) {
+		n++;
+		s += nlen;
+	}
+	return n;
+}
+
 bool test_r_file(void) {
 	char *s = r_file_new ("/foo", "bar", NULL);
 	mu_assert_streq (s, "/foo/bar", "error, invalid path");
@@ -8,16 +18,66 @@ bool test_r_file(void) {
 	s = r_file_new ("/foo/", "bar", NULL);
 	mu_assert_streq (s, "/foo/bar", "error, invalid path");
 	free (s);
+	char *root = r_str_newf ("foo%s%s", R_SYS_DIR, R_SYS_DIR);
+	char *expected = r_str_newf ("foo%sbar", R_SYS_DIR);
+	s = r_file_root (root, "///bar");
+	mu_assert_streq (s, expected, "error, invalid rooted path");
+	free (s);
+	free (expected);
+	free (root);
 	mu_end;
 }
 
 //TODO test r_str_chop_path
 bool test_r_str_wrap(void) {
 	char *s = r_str_wrap ("hello world\nhow are you\n", 5);
-	char *res = strdup ("hello\n world\nhow ar\ne you\n");
+	char *res = strdup ("hello\nworld\nhow\nare\nyou\n");
 	mu_assert_streq (s, res, "error, invalid string wrapping");
 	free (s);
 	free (res);
+	mu_end;
+}
+
+bool test_r_str_md2txt_rendering(void) {
+	RMarkdownOptions options = {
+		.utf8 = true,
+	};
+	char *line = r_str_repeat ("\xe2\x80\x95", 37);
+	char *expected = r_str_newf ("# T\n%*s%s\n", 19, "", line);
+	char *s = r_str_md2txt ("# T\n---\n", &options);
+	mu_assert_streq (s, expected, "markdown title and hr rendering");
+	free (s);
+	free (expected);
+	free (line);
+
+	RMarkdownOptions color_options = {
+		.color = true,
+	};
+	s = r_str_md2txt ("```\n\nx\n```\n", &color_options);
+	mu_assert_eq (count_substr (s, "\x1b[48;5;234m"), 2, "markdown codeblock background rows");
+	mu_assert_eq (count_substr (s, "\x1b[48;5;236m"), 0, "markdown codeblock old background color");
+	free (s);
+
+	s = r_str_md2txt ("Use `foo` here\n", &color_options);
+	mu_assert_eq (count_substr (s, "`foo`"), 0, "markdown inline code marker is not raw text");
+	mu_assert_eq (count_substr (s, "\x1b[48;5;234m" Color_WHITE "foo" Color_RESET_BG Color_RESET), 1, "markdown inline code rendering");
+	free (s);
+
+	s = r_str_md2txt ("| attr | plain |\n| --- | --- |\n| **cell** | ~~gone~~ |\n", &options);
+	mu_assert_eq (count_substr (s, "**cell**"), 0, "markdown table bold marker is not raw text");
+	mu_assert_eq (count_substr (s, "~~gone~~"), 0, "markdown table strike marker is not raw text");
+	mu_assert_eq (count_substr (s, Color_BOLD "cell" Color_BOLD_RESET), 1, "markdown table bold cell rendering");
+	mu_assert_eq (count_substr (s, Color_STRIKE "gone" Color_STRIKE_RESET), 1, "markdown table strike cell rendering");
+	free (s);
+
+	RMarkdownOptions table_code_options = {
+		.color = true,
+		.utf8 = true,
+	};
+	s = r_str_md2txt ("| attr |\n| --- |\n| `code` |\n", &table_code_options);
+	mu_assert_eq (count_substr (s, "`code`"), 0, "markdown table inline code marker is not raw text");
+	mu_assert_eq (count_substr (s, "\x1b[48;5;234m" Color_WHITE "code" Color_RESET_BG Color_RESET), 1, "markdown table inline code rendering");
+	free (s);
 	mu_end;
 }
 
@@ -53,6 +113,10 @@ bool test_r_str_replace(void) {
 	str = r_str_replace (strdup ("hello horld"), "h", "hello", 0);
 	mu_assert_streq (str, "helloello horld", "error, replace char multi failed");
 	free (str);
+
+	str = r_str_replace (strdup ("Hello horld"), "h", "hello", 'i');
+	mu_assert_streq (str, "Helloello helloorld", "error, replace char icase failed");
+	free (str);
 	mu_end;
 }
 
@@ -61,6 +125,39 @@ bool test_r_str_replace_char(void) {
 	(void) r_str_replace_char (str, 'l', 'x');
 	mu_assert_streq (str, "hexxo worxd", "error, replace char multi failed");
 	free (str);
+	mu_end;
+}
+
+bool test_r_str_normalize_newlines(void) {
+	const char *inputs[] = {
+		"one\ntwo\n", "one\rtwo\r", "one\r\ntwo\r\n", "one\n\rtwo\n\r", NULL
+	};
+	const char *names[] = { "unix", "classic", "dos", "lfcr" };
+	int i;
+	for (i = 0; inputs[i]; i++) {
+		char *str = strdup (inputs[i]);
+		r_str_normalize_newlines (str);
+		mu_assert_streq_free (str, "one\ntwo\n", names[i]);
+	}
+	char repeated[] = "one\n\ntwo\r\rthree\r\n\rfour\n\r\n";
+	r_str_normalize_newlines (repeated);
+	mu_assert_streq (repeated, "one\n\ntwo\n\nthree\n\nfour\n\n", "preserve repeated newlines");
+	mu_end;
+}
+
+bool test_r_str_filter_file(void) {
+	char file[32] = "theme.zip";
+	mu_assert ("single dot is valid", !r_str_filter_file (file));
+	mu_assert_streq (file, "theme.zip", "single dot changed");
+	r_str_ncpy (file, "..", sizeof (file));
+	mu_assert ("parent directory was not filtered", r_str_filter_file (file));
+	mu_assert_streq (file, "._", "parent directory filter");
+	r_str_ncpy (file, "theme..zip", sizeof (file));
+	mu_assert ("double dot was not filtered", r_str_filter_file (file));
+	mu_assert_streq (file, "theme._zip", "double dot filter");
+	r_str_ncpy (file, "dir/theme\\file", sizeof (file));
+	mu_assert ("path separators were not filtered", r_str_filter_file (file));
+	mu_assert_streq (file, "dir_theme_file", "path separator filter");
 	mu_end;
 }
 
@@ -234,8 +331,8 @@ bool test_r_str_word_count(void) {
 }
 
 bool test_r_str_ichr(void) {
-	char* test = "rrrrrradare2";
-	char* out = r_str_ichr (test, 'r');
+	const char* test = "rrrrrradare2";
+	const char* out = r_str_ichr (test, 'r');
 	mu_assert_streq (out, "adare2",
 			"string after the first non-r character in rrrrrradare2");
 	mu_end;
@@ -308,6 +405,18 @@ bool test_r_str_ansi_len(void) {
 	len = r_str_ansi_len ("radar\xf0\x9d\x84\x9e""2");
 	mu_assert_eq (len, 7, "len(ascii + 4 byte utf-8 counted as 1 char)");
 
+	len = r_str_ansi_len ("x\xe2\x9c\x85""y");
+	mu_assert_eq (len, 4, "len(ascii + emoji check mark counted as 2 cells)");
+
+	len = r_str_ansi_len ("x\xe2\x9a\xa0\xef\xb8\x8f""y");
+	mu_assert_eq (len, 4, "len(ascii + emoji variation selector counted as 2 cells)");
+
+	len = r_str_ansi_len ("x\xf0\x9f\x93\x8a""y");
+	mu_assert_eq (len, 4, "len(ascii + 4 byte emoji counted as 2 cells)");
+
+	len = r_utf8_display_width ((const ut8 *)"\xe2\x9c\x85");
+	mu_assert_eq (len, 2, "utf8 display width counts emoji check mark as 2 cells");
+
 	mu_end;
 }
 
@@ -347,6 +456,38 @@ bool test_r_str_len_utf8_ansi_truncated_utf8_tail(void) {
 	mu_assert_eq (len, 1, "len(truncated 4-byte utf8 tail)");
 	mu_assert_eq (r_utf8_decode ((const ut8 *)s1 + 3, -1, NULL), 0, "decode rejects truncated utf8 tail");
 	mu_assert_eq (r_utf8_decode ((const ut8 *)s2, -1, NULL), 0, "decode rejects truncated 4-byte utf8 tail");
+	mu_end;
+}
+
+bool test_r_str_utf16_to_utf8(void) {
+	ut8 le[] = { 'r', 0, '2', 0 };
+	ut8 be[] = { 0, 'r', 0, '2' };
+	char out[8];
+
+	memset (out, 0xff, sizeof (out));
+	int len = r_str_utf16_to_utf8 ((ut8 *)out, sizeof (out), le, sizeof (le), false);
+	mu_assert_eq (len, 2, "utf16le byte length");
+	mu_assert_streq (out, "r2", "utf16le string");
+	mu_assert_eq ((ut8)out[2], 0, "utf16le string terminator");
+
+	memset (out, 0xff, sizeof (out));
+	len = r_str_utf16_to_utf8 ((ut8 *)out, sizeof (out), be, sizeof (be), true);
+	mu_assert_eq (len, 2, "utf16be byte length");
+	mu_assert_streq (out, "r2", "utf16be string");
+	mu_assert_eq ((ut8)out[2], 0, "utf16be string terminator");
+
+	mu_end;
+}
+
+bool test_r_str_uri_decode(void) {
+	char uri[] = "a%20b%00c";
+	const ut8 expected[] = { 'a', ' ', 'b', 0, 'c' };
+	int len = r_str_uri_decode (uri);
+	mu_assert_eq (len, sizeof (expected), "URI-decoded byte length");
+	mu_assert_memeq ((const ut8 *)uri, expected, sizeof (expected), "URI-decoded binary data");
+
+	char invalid[] = "%xy";
+	mu_assert_eq (r_str_uri_decode (invalid), -1, "Invalid URI escape");
 	mu_end;
 }
 
@@ -731,12 +872,121 @@ bool test_r_str_word_get0set(void) {
 	mu_end;
 }
 
+bool test_r_str_font(void) {
+	char *res = r_str_font ("A", NULL);
+	mu_assert_streq (res, "A", "plain font");
+	free (res);
+
+	res = r_str_font ("<bold>A</bold>", NULL);
+	mu_assert_streq (res, "\xF0\x9D\x90\x80", "bold tag");
+	free (res);
+
+	res = r_str_font ("A", "bold");
+	mu_assert_streq (res, "\xF0\x9D\x90\x80", "default bold font");
+	free (res);
+
+	res = r_str_font ("A", "bold,ansiitalic,invert");
+	mu_assert_streq (res, "\x1b[3m\x1b[7m\xF0\x9D\x90\x80\x1b[27m\x1b[23m", "combined font attributes");
+	free (res);
+
+	res = r_str_font ("A <italic>A</italic>", "bold");
+	mu_assert_streq (res, "\xF0\x9D\x90\x80 \xF0\x9D\x90\x80", "default font ignores inline tags");
+	free (res);
+
+	res = r_str_font ("<ansistrike>A</ansistrike>", NULL);
+	mu_assert_streq (res, "\x1b[9mA\x1b[29m", "inline ansi attribute");
+	free (res);
+
+	res = r_str_font ("A", "unknown");
+	mu_assert_streq (res, "A", "unknown default font");
+	free (res);
+	mu_end;
+}
+
+bool test_r_str_printfmt_types(void) {
+	mu_assert_streq_free (r_str_printfmt ("%s %d %f %x\n", 0, 0),
+		"char *,int,double,unsigned int", "printf conversions to C types");
+	mu_assert_streq_free (r_str_printfmt ("%ld %lld %zu", 0, 0),
+		"long,long long,unsigned long", "length modifiers");
+	mu_assert_streq_free (r_str_printfmt ("%c %p %Lf", 0, 0),
+		"int,void *,long double", "char/pointer/long double");
+	mu_assert_streq_free (r_str_printfmt ("%*d", 0, 0),
+		"int,int", "star width consumes an int arg");
+	mu_assert_streq_free (r_str_printfmt ("100%% done", 0, 0),
+		"", "literal percent takes no arg");
+	mu_assert_null (r_str_printfmt ("%1$s", 0, 0), "positional args unsupported");
+	mu_assert_null (r_str_printfmt ("%y", 0, 0), "unknown conversion rejected");
+	mu_end;
+}
+
+bool test_r_str_printfmt_pf(void) {
+	mu_assert_streq_free (r_str_printfmt ("%s %d %f %x\n", 64, '*'),
+		"SiFx", "printf conversions to pf (64-bit)");
+	mu_assert_streq_free (r_str_printfmt ("%ld %p", 64, '*'),
+		"qp", "long is qword on 64-bit");
+	mu_assert_streq_free (r_str_printfmt ("%ld %s", 32, '*'),
+		"is", "long is dword-signed and string ptr is 32-bit on 32-bit");
+	mu_assert_null (r_str_printfmt ("%y", 64, '*'), "unknown conversion rejected");
+	mu_end;
+}
+
+bool test_r_str_but_escape(void) {
+	const char *s = "a | \"b|c\" d \\| e | 'f|g'";
+	mu_assert_ptreq (r_str_firstbut_escape (s, '|', "\"'"), s + 2,
+		"first delimiter outside quoted spans");
+	mu_assert_ptreq (r_str_lastbut (s, '|', "\"'"), strstr (s, "| 'f"),
+		"last delimiter outside multiple quoted spans and escapes");
+	s = "a \"b\\\"|c\" | d";
+	mu_assert_ptreq (r_str_firstbut (s, '|', "\"'"), r_str_lchr (s, '|'),
+		"first delimiter after escaped quote");
+	mu_assert_ptreq (r_str_firstbut_escape (s, '|', "\"'"), r_str_lchr (s, '|'),
+		"escaped quote keeps delimiter inside quoted span");
+	s = "a \\| b";
+	mu_assert_ptreq (r_str_firstbut (s, '|', "\"'"), s + 3, "first escaped delimiter");
+	mu_assert_null (r_str_firstbut_escape (s, '|', "\"'"), "escaped delimiter skipped");
+	mu_assert_ptreq (r_str_lastbut (s, '|', "\"'"), s + 3, "last escaped delimiter");
+	s = "a \\\\| b";
+	mu_assert_ptreq (r_str_firstbut_escape (s, '|', "\"'"), r_str_lchr (s, '|'),
+		"even backslashes do not escape delimiter");
+	s = "a \\\\\\| b";
+	mu_assert_null (r_str_firstbut_escape (s, '|', "\"'"),
+		"odd backslashes escape delimiter");
+	mu_end;
+}
+
+bool test_r_str_trim_args_quote_parity(void) {
+	char odd_single[] = "'pa\\'tata'";
+	r_str_trim_args (odd_single);
+	mu_assert_streq (odd_single, "pa'tata", "odd backslash escapes single quote");
+	char even_single[] = "'pa\\\\'tata'";
+	r_str_trim_args (even_single);
+	mu_assert_streq (even_single, "pa\\\\tata'", "even backslashes close single quote");
+	char odd_double[] = "\"pa\\\"tata\"";
+	r_str_trim_args (odd_double);
+	mu_assert_streq (odd_double, "pa\"tata", "odd backslash escapes double quote");
+	char even_double[] = "\"pa\\\\\"tata\"";
+	r_str_trim_args (even_double);
+	mu_assert_streq (even_double, "pa\\\\tata\"", "even backslashes close double quote");
+	char escaped_text[] = "'pa\\\\tata'";
+	r_str_trim_args (escaped_text);
+	mu_assert_streq (escaped_text, "pa\\\\tata", "backslash pair is preserved for unescape");
+	r_str_unescape (escaped_text);
+	mu_assert_streq (escaped_text, "pa\\tata", "backslash pair keeps the following t literal");
+	char escaped_syntax[] = "\\# \\@ \\~ \\! \\& \\* \\( \\) \\< \\> \\$";
+	r_str_trim_args (escaped_syntax);
+	mu_assert_streq (escaped_syntax, "# @ ~ ! & * ( ) < > $", "shell syntax escapes are removed");
+	mu_end;
+}
+
 bool all_tests(void) {
 	mu_run_test (test_r_file);
 	mu_run_test (test_r_str_wrap);
+	mu_run_test (test_r_str_md2txt_rendering);
 	mu_run_test (test_r_str_newf);
 	mu_run_test (test_r_str_replace_char_once);
 	mu_run_test (test_r_str_replace_char);
+	mu_run_test (test_r_str_normalize_newlines);
+	mu_run_test (test_r_str_filter_file);
 	mu_run_test (test_r_str_replace);
 	mu_run_test (test_r_str_bits64);
 	mu_run_test (test_r_str_rwx);
@@ -757,6 +1007,8 @@ bool all_tests(void) {
 	mu_run_test (test_r_str_ansi_len);
 	mu_run_test (test_r_str_len_utf8_ansi);
 	mu_run_test (test_r_str_len_utf8_ansi_truncated_utf8_tail);
+	mu_run_test (test_r_str_utf16_to_utf8);
+	mu_run_test (test_r_str_uri_decode);
 	mu_run_test (test_r_str_utf8_charsize);
 	mu_run_test (test_r_str_utf8_charsize_prev);
 	mu_run_test (test_r_str_sanitize_sdb_key);
@@ -771,6 +1023,11 @@ bool all_tests(void) {
 	mu_run_test (test_r_mem_to_binstring);
 	mu_run_test (test_r_str_ndup_zero_len);
 	mu_run_test (test_r_str_word_get0set);
+	mu_run_test (test_r_str_font);
+	mu_run_test (test_r_str_printfmt_types);
+	mu_run_test (test_r_str_printfmt_pf);
+	mu_run_test (test_r_str_but_escape);
+	mu_run_test (test_r_str_trim_args_quote_parity);
 	return tests_passed != tests_run;
 }
 

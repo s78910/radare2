@@ -200,8 +200,8 @@ static CPU_MODEL *__get_cpu_model_recursive(PluginData *pd, const char *model) {
 }
 
 static CPU_MODEL *get_cpu_model(PluginData *pd, const char *model) {
-	if (!model) {
-		model = "ATmega8";
+	if (R_STR_ISEMPTY (model)) {
+		model = "ATxmega128a4u";
 	}
 	// cache
 	if (pd->cpu && pd->cpu->model && !r_str_casecmp (model, pd->cpu->model)) {
@@ -1745,11 +1745,8 @@ static bool decode(RArchSession *as, RAnalOp *op, RArchDecodeMask mask) {
 		return 2; // R_MIN (len, 2);
 	}
 
-	// select cpu info
 	CPU_MODEL *cpu = get_cpu_model (as->data, as->config->cpu);
-
 #if 0
-	// set memory layout registers
 	if (as->arch->esil) {
 		ut64 offset = 0;
 		r_esil_reg_write (as->arch->esil, "_prog", offset);
@@ -1767,7 +1764,6 @@ static bool decode(RArchSession *as, RAnalOp *op, RArchDecodeMask mask) {
 		r_esil_reg_write (as->arch->esil, "_page", offset);
 	}
 #endif
-	// process opcode
 	avr_op_analyze (as, op, addr, buf, len, cpu);
 
 	op->size = size;
@@ -1839,7 +1835,7 @@ static bool avr_custom_spm_page_erase(REsil *esil) {
 	ut64 page_size_bits = const_get_value (const_by_name (cpu, CPU_CONST_PARAM, "page_size"));
 
 	// align base address to page_size_bits
-	addr &= ~(MASK (page_size_bits));
+	addr &= ~(ut64)MASK (page_size_bits);
 
 	// perform erase
 	// eprintf ("SPM_PAGE_ERASE %ld bytes @ 0x%08" PFMT64x ".\n", page_size, addr);
@@ -2339,8 +2335,7 @@ static ut8 *anal_mask_avr(RArchSession *as, int size, const ut8 *data, ut64 at) 
 }
 #endif
 
-static bool esil_cb(RArchSession *as, RArchEsilAction action) {
-	REsil *esil = as->arch->esil;
+static bool esil_cb(RArchSession *as, REsil *esil, RArchEsilAction action) {
 	if (!esil) {
 		return false;
 	}

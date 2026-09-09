@@ -514,7 +514,7 @@ static void cmd_fzs(RCore *core, const char *input) {
 static void cmd_fz(RCore *core, const char *input) {
 	switch (*input) {
 	case '?': // "fz?"
-		r_core_cmd_help (core, help_msg_fz);
+		r_cons_cmd_help (core->cons, help_msg_fz);
 		break;
 	case '.': // "fz."
 		{
@@ -560,7 +560,7 @@ static void cmd_fz(RCore *core, const char *input) {
 			const char *name = r_str_trim_head_ro (input + 1);
 			RFlagZoneItem *fz = r_flag_zone_get (core->flags, name);
 			if (fz) {
-				r_cons_printf (core->cons, "0x08"PFMT64x, fz->from);
+				r_cons_printf (core->cons, "0x%08"PFMT64x, fz->from);
 			} else {
 				R_LOG_ERROR ("There is no flag zone with this name");
 			}
@@ -616,9 +616,8 @@ static void cmd_fz(RCore *core, const char *input) {
 		{
 			PJ *pj = r_core_pj_new (core);
 			pj_a (pj);
-			RListIter *iter;
 			RFlagZoneItem *zone;
-			r_list_foreach (core->flags->zones, iter, zone) {
+			R_VEC_FOREACH (&core->flags->zones, zone) {
 				pj_o (pj);
 				pj_kn (pj, "from", zone->from);
 				pj_kn (pj, "to", zone->to);
@@ -774,7 +773,7 @@ static void cmd_flag_tags(RCore *core, const char *input) {
 		return;
 	}
 	if (mode == '?') {
-		r_core_cmd_help (core, help_msg_ft);
+		r_cons_cmd_help (core->cons, help_msg_ft);
 		free (inp);
 		return;
 	}
@@ -794,8 +793,7 @@ static void cmd_flag_tags(RCore *core, const char *input) {
 		const char *tag;
 		RList *list = r_flag_tags_list (core->flags, NULL);
 		r_list_foreach (list, iter, tag) {
-			r_strf_var (key, 128, "tag.%s", tag);
-			const char *flags = sdb_get (core->flags->tags, key, NULL);
+			const char *flags = sdb_const_getf (core->flags->tags, NULL, "tag.%s", tag);
 			r_cons_printf (core->cons, "'ft %s %s\n", tag, flags);
 		}
 		r_list_free (list);
@@ -895,9 +893,15 @@ static void flag_ordinals(RCore *core, const char *str) {
 	free (pfx);
 }
 
-static int cmpflag(const void *_a, const void *_b) {
-	const RFlagItem *flag1 = _a , *flag2 = _b;
-	return (flag1->addr - flag2->addr);
+static int cmpflag(RFlagItem * const *a, RFlagItem * const *b) {
+	const RFlagItem *flag1 = *a, *flag2 = *b;
+	if (flag1->addr < flag2->addr) {
+		return -1;
+	}
+	if (flag1->addr > flag2->addr) {
+		return 1;
+	}
+	return 0;
 }
 
 static bool adjust_offset(RFlagItem *flag, void *user) {
@@ -991,21 +995,39 @@ static bool print_function_labels_cb(void *user, const ut64 addr, const void *v)
 	return true;
 }
 
+static void print_flag_color(RCore *core, RFlagItem *fi, bool rad) {
+	RFlagItemMeta *fim = r_flag_get_meta (core->flags, fi->id);
+	if (!fim || !fim->color) {
+		return;
+	}
+	if (rad) {
+		char *fname = r_name_filter_dup (fi->name);
+		if (fname) {
+			r_cons_printf (core->cons, "'fc %s=%s\n", fname, fim->color);
+			free (fname);
+		}
+		return;
+	}
+	char padstr[16];
+	r_str_pad (padstr, sizeof (padstr), ' ', 10 - strlen (fi->name));
+	r_cons_printf (core->cons, "0x%08"PFMT64x"  %s%s%s\n", fi->addr, fi->name, padstr, fim->color);
+}
+
 static void cmd_fd_dot(RCore *core, const char *input) {
 	RFlagItem *flag;
-	RListIter *iter;
+	RFlagItem **iter;
 	const char *arg = strchr (input, ' ');
 	ut64 addr = core->addr;
 	if (arg) {
 		addr = r_num_math (core->num, arg + 1);
 	}
-	const RList *flaglist = r_flag_get_list (core->flags, addr);
+	const RVecFlagItemPtr *flaglist = r_flag_get_vec (core->flags, addr);
 	bool isJson = strchr (input, 'j') != NULL;
 	PJ *pj = isJson? r_core_pj_new (core): NULL;
 	if (pj) {
 		pj_a (pj);
 	}
-	r_list_foreach (flaglist, iter, flag) {
+	r_flag_item_vec_foreach (flaglist, iter, flag) {
 		if (isJson) {
 			pj_o (pj);
 			pj_ks (pj, "name", flag->name);
@@ -1079,7 +1101,7 @@ static void cmd_fd(RCore *core, const char *input) {
 	bool strict_offset = false;
 	switch (input[1]) {
 	case '?':
-		r_core_cmd_help (core, help_msg_fd);
+		r_cons_cmd_help (core->cons, help_msg_fd);
 		return;
 	case '\0':
 		addr = core->addr;
@@ -1103,15 +1125,15 @@ static void cmd_fd(RCore *core, const char *input) {
 				  return;
 			  }
 
-			  RList *temp = r_flag_all_list (core->flags, true);
+			  RVecFlagItemPtr *temp = r_flag_all_list (core->flags, true);
 			  ut64 loff = 0;
 			  ut64 uoff = 0;
 			  ut64 curseek = core->addr;
 			  char *lmatch = NULL , *umatch = NULL;
 			  RFlagItem *flag;
-			  RListIter *iter;
-			  r_list_sort (temp, &cmpflag);
-			  r_list_foreach (temp, iter, flag) {
+			  RFlagItem **iter;
+			  RVecFlagItemPtr_sort (temp, &cmpflag);
+			  r_flag_item_vec_foreach (temp, iter, flag) {
 				  if (strstr (flag->name , arg)) {
 					  if (flag->addr < core->addr) {
 						  loff = flag->addr;
@@ -1129,7 +1151,7 @@ static void cmd_fd(RCore *core, const char *input) {
 					  r_cons_println (core->cons, match);
 				  }
 			  }
-			  r_list_free (temp);
+			  RVecFlagItemPtr_free (temp);
 			  return;
 		  }
 		  break;
@@ -1233,7 +1255,7 @@ static bool cmd_flag_add(RCore * R_NONNULL core, const char *str, bool addsign) 
 			if (s3) {
 				*s3 = '\0';
 				if (r_str_startswith (s3 + 1, "base64:")) {
-					comment = (char *) r_base64_decode_dyn (s3 + 8, -1, NULL);
+					comment = (char *) r_base64_decode_dyn (s3 + 8, -1, NULL, false);
 					comment_needs_free = true;
 				} else if (s3[1]) {
 					comment = s3 + 1;
@@ -1276,11 +1298,11 @@ static bool cmd_flag_add(RCore * R_NONNULL core, const char *str, bool addsign) 
 static void cmd_fR(RCore *core, const char *str) {
 	switch (*str) {
 	case '\0':
-		r_core_cmd_help_match (core, help_msg_f, "fR");
+		r_cons_cmd_help_match (core->cons, help_msg_f, "fR", 0, true);
 		R_LOG_INFO ("Relocate PIE flags in debugger with f.ex: fR entry0 `dm~:1[1]`");
 		break;
 	case '?':
-		r_core_cmd_help (core, help_msg_fR);
+		r_cons_cmd_help (core->cons, help_msg_fR);
 		break;
 	case ' ':
 		{
@@ -1299,7 +1321,7 @@ static void cmd_fR(RCore *core, const char *str) {
 				ret = r_flag_relocate (core->flags, from, mask, to);
 				R_LOG_INFO ("Relocated %d flags", ret);
 			} else {
-				r_core_cmd_help_match (core, help_msg_f, "fR");
+				r_cons_cmd_help_match (core->cons, help_msg_f, "fR", 0, true);
 				R_LOG_INFO ("Relocate PIE flags in debugger with f.ex: fR entry0 `dm~:1[1]`");
 			}
 		}
@@ -1312,7 +1334,7 @@ static void cmd_fR(RCore *core, const char *str) {
 
 static void cmd_fsp(RCore *core, const char *input) {
 	if (input[2] == '?') {
-		r_core_cmd_help_match (core, help_msg_fs, "fsp");
+		r_cons_cmd_help_match (core->cons, help_msg_fs, "fsp", 0, true);
 		return;
 	}
 	if (!input[2]) {
@@ -1358,14 +1380,14 @@ static void cmd_fsp(RCore *core, const char *input) {
 static void cmd_flag_spaces(RCore *core, const char *input) {
 	switch (input[1]) {
 	case '?': // "fs?"
-		r_core_cmd_help (core, help_msg_fs);
+		r_cons_cmd_help (core->cons, help_msg_fs);
 		break;
 	case '+': // "fs+"
 		r_flag_space_push (core->flags, r_str_trim_head_ro (input + 2));
 		break;
 	case 'r': // "fsr"
 		if (input[2] == '?') {
-			r_core_cmd_help_match (core, help_msg_fs, "fsr");
+			r_cons_cmd_help_match (core->cons, help_msg_fs, "fsr", 0, true);
 		} else if (input[2] == ' ') {
 			char *newname = r_str_trim_dup (input + 3);
 			r_flag_space_rename (core->flags, NULL, newname);
@@ -1462,12 +1484,12 @@ static void cmd_fu(RCore *core, const char *input) {
 			}
 		}
 		if (rawb64 && *rawb64) {
-			char *rawdec = (char *)r_base64_decode_dyn (rawb64, -1, NULL);
-			free (item->rawname);
-			item->rawname = rawdec? rawdec: NULL;
+			char *rawdec = (char *)r_base64_decode_dyn (rawb64, -1, NULL, false);
+			r_flag_item_set_rawname (core->flags, item, rawdec);
+			free (rawdec);
 		}
 		if (realb64 && *realb64) {
-			char *realdec = (char *)r_base64_decode_dyn (realb64, -1, NULL);
+			char *realdec = (char *)r_base64_decode_dyn (realb64, -1, NULL, false);
 			if (realdec) {
 				(void)r_flag_item_set_realname (core->flags, item, realdec);
 				free (realdec);
@@ -1487,7 +1509,7 @@ static void cmd_fu(RCore *core, const char *input) {
 		if (item) {
 			char *rawname = item->rawname? r_base64_encode_dyn ((void*)item->rawname, strlen (item->rawname)): NULL;
 			char *realname = item->realname? r_base64_encode_dyn ((void*)item->realname, strlen (item->realname)): NULL;
-			r_cons_printf (core->cons, "'@0x%08"PFMT64x"'fu %d %s %s %s\n",
+			r_cons_printf (core->cons, "'@0x%08"PFMT64x"'fu %"PFMT64u" %s %s %s\n",
 					item->addr, item->size, item->name, rawname, realname);
 			free (rawname);
 			free (realname);
@@ -1532,7 +1554,7 @@ static int cmd_flag(void *data, const char *input) {
 	switch (*input) {
 	case 'f': // "ff"
 		if (input[1] == '?') { // "ff?"
-			r_core_cmd_help_contains (core, help_msg_f, "ff");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "ff", 0, false);
 		} else if (input[1] == 's') { // "ffs"
 			const int delta = flag_to_flag (core, input + 2);
 			if (delta > 0) {
@@ -1554,7 +1576,7 @@ static int cmd_flag(void *data, const char *input) {
 			flagenum = 0;
 			break;
 		case '?':
-			r_core_cmd_help_contains (core, help_msg_f, "fe");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fe", 0, false);
 			break;
 		default:
 			r_core_return_invalid_command (core, "fe", input[1]);
@@ -1570,7 +1592,7 @@ static int cmd_flag(void *data, const char *input) {
 			flagbars (core, input + 2);
 			break;
 		case '?':
-			r_core_cmd_help (core, help_msg_feq);
+			r_cons_cmd_help (core->cons, help_msg_feq);
 			break;
 		default:
 			r_core_return_invalid_command (core, "f=", input[1]);
@@ -1642,7 +1664,7 @@ static int cmd_flag(void *data, const char *input) {
 			}
 			break;
 		case '?':
-			r_core_cmd_help_match (core, help_msg_f, "fa");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fa", 0, true);
 			break;
 		default:
 			r_core_return_invalid_command (core, "fa", input[1]);
@@ -1688,7 +1710,7 @@ static int cmd_flag(void *data, const char *input) {
 			}
 			break;
 		case '?':
-			r_core_cmd_help (core, help_msg_fV);
+			r_cons_cmd_help (core->cons, help_msg_fV);
 			break;
 		default:
 			r_core_vmark_dump (core, 0);
@@ -1697,14 +1719,22 @@ static int cmd_flag(void *data, const char *input) {
 		break;
 	case 'm': // "fm"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_f, "fm");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fm", 0, false);
+		} else if (input[1] == ' ') {
+			const char *errstr = NULL;
+			ut64 n = r_num_math_err (core->num, input + 1, &errstr);
+			if (errstr) {
+				R_LOG_ERROR ("Invalid number for fm");
+			} else {
+				r_flag_move (core->flags, core->addr, n);
+			}
 		} else {
-			r_flag_move (core->flags, core->addr, r_num_math (core->num, input+1));
+			r_core_return_invalid_command (core, "fm", input[1]);
 		}
 		break;
 	case 'R': // "fR"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_f, "fR");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fR", 0, false);
 		} else {
 			cmd_fR (core, str);
 		}
@@ -1730,13 +1760,13 @@ static int cmd_flag(void *data, const char *input) {
 				core->flags->base, core->flags->base);
 			break;
 		default:
-			r_core_cmd_help_match (core, help_msg_f, "fb");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fb", 0, true);
 			break;
 		}
 		break;
 	case '+': // "f+'
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_f, "f+");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "f+", 0, false);
 		} else {
 			cmd_flag_add (core, str, 1);
 		}
@@ -1750,7 +1780,7 @@ static int cmd_flag(void *data, const char *input) {
 		} else if (input[1]) {
 			const char *flagname = r_str_trim_head_ro (input + 1);
 			if (*flagname == '?') {
-				r_core_cmd_help_contains (core, help_msg_f, "f-");
+				r_cons_cmd_help_match (core->cons, help_msg_f, "f-", 0, false);
 			} else if (isdigit (*flagname)) {
 				ut64 addr = r_num_math (core->num, flagname);
 				r_flag_unset_addr (core->flags, addr);
@@ -1778,7 +1808,7 @@ static int cmd_flag(void *data, const char *input) {
 		input = r_str_trim_head_ro (input + 1) - 1;
 		if (input[1]) {
 			if (input[1] == '?') {
-				r_core_cmd_help_contains (core, help_msg_f, "f.");
+				r_cons_cmd_help_match (core->cons, help_msg_f, "f.", 0, false);
 			} else if (input[1] == '*' || input[1] == 'j') {
 				if (input[2] == '*') {
 					print_function_labels (core, NULL, input[1]);
@@ -1823,38 +1853,36 @@ static int cmd_flag(void *data, const char *input) {
 		break;
 	case 'l': // "fl"
 		if (input[1] == '?') { // "fl?"
-			r_core_cmd_help_contains (core, help_msg_f, "fl");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fl", 0, false);
 		} else if (input[1] == 'a') { // "fla"
 			if (input[2] == '?') { // "fla?"
-				r_core_cmd_help_match (core, help_msg_f, "fla");
+				r_cons_cmd_help_match (core->cons, help_msg_f, "fla", 0, true);
 				break;
 			}
 			char *glob = strchr (input, ' ');
 			if (glob) {
 				glob++;
 			}
-			// collect all flags sorted by addr (skip list order), then single O(n) pass
-			RList *all_flags = r_list_newf (NULL);
-			r_flag_foreach (core->flags, listFlag, all_flags);
-			RListIter *iter;
-			RFlagItem *fi;
-			r_list_foreach (all_flags, iter, fi) {
+			RVecFlagItemPtr *all_flags = r_flag_all_list (core->flags, false);
+			size_t i;
+			for (i = 0; i < r_flag_item_vec_length (all_flags); i++) {
+				RFlagItem *fi = *RVecFlagItemPtr_at (all_flags, i);
 				if (fi->size != 0) {
 					continue;
 				}
 				if (glob && !r_str_glob (fi->name, glob)) {
 					continue;
 				}
-				RListIter *ni;
-				for (ni = iter->n; ni; ni = ni->n) {
-					RFlagItem *nf = ni->data;
+				size_t n;
+				for (n = i + 1; n < r_flag_item_vec_length (all_flags); n++) {
+					RFlagItem *nf = *RVecFlagItemPtr_at (all_flags, n);
 					if (nf->addr > fi->addr) {
 						fi->size = nf->addr - fi->addr;
 						break;
 					}
 				}
 			}
-			r_list_free (all_flags);
+			RVecFlagItemPtr_free (all_flags);
 		} else if (input[1] == ' ') { // "fl ..."
 			char *p, *arg = strdup (input + 2);
 			r_str_trim (arg);
@@ -1898,7 +1926,7 @@ static int cmd_flag(void *data, const char *input) {
 		break;
 	case 'x': // "fx"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_f, "fx");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fx", 0, false);
 		} else if (input[1] == ' ') {
 			RFlagItem *item = r_flag_get_in (core->flags,
 				r_num_math (core->num, input + 2));
@@ -1922,7 +1950,7 @@ static int cmd_flag(void *data, const char *input) {
 	case 'g': // "fg"
 		if (input[1]) {
 			if (input[1] == '?') {
-				r_core_cmd_help_contains (core, help_msg_f, "fg");
+				r_cons_cmd_help_match (core->cons, help_msg_f, "fg", 0, false);
 			} else if (input[1] == ' ') {
 				r_core_cmdf (core, "&& %d", atoi (input + 2));
 			} else {
@@ -1935,7 +1963,7 @@ static int cmd_flag(void *data, const char *input) {
 	case 'h': // "fh"
 		switch (input[1]) {
 		case '?':
-			r_core_cmd_help_contains (core, help_msg_f, "fh");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fh", 0, false);
 			break;
 		case '*':
 			__flag_graph (core, r_str_trim_head_ro (input + 2), '*');
@@ -1947,49 +1975,49 @@ static int cmd_flag(void *data, const char *input) {
 			__flag_graph (core, r_str_trim_head_ro (input + 1), 0);
 			break;
 		default:
-			r_core_cmd_help_contains (core, help_msg_f, "fh");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fh", 0, false);
 			break;
 		}
 		break;
 	case 'c': // "fc"
 		if (input[1] == 0 || input[1] == '.') {
-			RList *list_to_free = input[1]? NULL: r_flag_all_list (core->flags, false);
-			const RList *list = input[1]? r_flag_get_list (core->flags, core->addr): list_to_free;
-			RListIter *iter;
 			RFlagItem *fi;
-			r_list_foreach (list, iter, fi) {
-				RFlagItemMeta *fim = r_flag_get_meta (core->flags, fi->id);
-				if (fim && fim->color) {
-					if (input[1] && input[2] == '*') {
-						char *fname = r_name_filter_dup (fi->name);
-						if (fname) {
-							r_cons_printf (core->cons, "'fc %s=%s\n", fname, fim->color);
-							free (fname);
-						}
-					} else {
-						char padstr[16];
-						r_str_pad (padstr, sizeof (padstr), ' ', 10 - strlen (fi->name));
-						r_cons_printf (core->cons, "0x%08"PFMT64x"  %s%s%s\n", fi->addr, fi->name, padstr, fim->color);
-					}
+			RVecFlagItemPtr *list_to_free = input[1]? NULL: r_flag_all_list (core->flags, false);
+			bool rad = input[1] && input[2] == '*';
+			RFlagItem **viter;
+			if (input[1]) {
+				const RVecFlagItemPtr *list = r_flag_get_vec (core->flags, core->addr);
+				r_flag_item_vec_foreach (list, viter, fi) {
+					print_flag_color (core, fi, rad);
+				}
+			} else {
+				r_flag_item_vec_foreach (list_to_free, viter, fi) {
+					print_flag_color (core, fi, rad);
 				}
 			}
-			r_list_free (list_to_free);
+			RVecFlagItemPtr_free (list_to_free);
 		} else if (input[1] == '-') {
-			RListIter *iter;
 			RFlagItem *fi;
 			ut64 addr = (input[1] && input[2] != '*' && input[2]) ? r_num_math (core->num, input + 2): core->addr;
-			RList *list_to_free = (input[1] && input[2] == '*')? r_flag_all_list (core->flags, false): NULL;
-			const RList *list = (input[1] && input[2] == '*')?
-				list_to_free: r_flag_get_list (core->flags, addr);
-			r_list_foreach (list, iter, fi) {
-				r_flag_item_set_color (core->flags, fi, "");
+			if (input[1] && input[2] == '*') {
+				RFlagItem **iter;
+				RVecFlagItemPtr *list = r_flag_all_list (core->flags, false);
+				r_flag_item_vec_foreach (list, iter, fi) {
+					r_flag_item_set_color (core->flags, fi, "");
+				}
+				RVecFlagItemPtr_free (list);
+			} else {
+				RFlagItem **iter;
+				const RVecFlagItemPtr *list = r_flag_get_vec (core->flags, addr);
+				r_flag_item_vec_foreach (list, iter, fi) {
+					r_flag_item_set_color (core->flags, fi, "");
+				}
 			}
-			r_list_free (list_to_free);
 		} else if (input[1] == '*') {
-			RListIter *iter;
+			RFlagItem **iter;
 			RFlagItem *fi;
-			RList *list = r_flag_all_list (core->flags, false);
-			r_list_foreach (list, iter, fi) {
+			RVecFlagItemPtr *list = r_flag_all_list (core->flags, false);
+			r_flag_item_vec_foreach (list, iter, fi) {
 				RFlagItemMeta *fim = r_flag_get_meta (core->flags, fi->id);
 				if (fim && fim->color) {
 					char *fname = r_name_filter_dup (fi->name);
@@ -1999,7 +2027,7 @@ static int cmd_flag(void *data, const char *input) {
 					}
 				}
 			}
-			r_list_free (list);
+			RVecFlagItemPtr_free (list);
 		} else if (input[1] == ' ') {
 			const char *ret;
 			char *arg = r_str_trim_dup (input + 2);
@@ -2020,18 +2048,18 @@ static int cmd_flag(void *data, const char *input) {
 					R_LOG_ERROR ("Unknown flag '%s'", arg);
 				}
 			} else {
-				const RList *list = r_flag_get_list (core->flags, core->addr);
+				const RVecFlagItemPtr *list = r_flag_get_vec (core->flags, core->addr);
 				char *color = r_str_trim_dup (input + 2);
-				RListIter *iter;
+				RFlagItem **iter;
 				RFlagItem *fi;
-				r_list_foreach (list, iter, fi) {
+				r_flag_item_vec_foreach (list, iter, fi) {
 					r_flag_item_set_color (core->flags, fi, color);
 				}
 				free (color);
 			}
 			free (arg);
 		} else {
-			r_core_cmd_help (core, help_msg_fc);
+			r_cons_cmd_help (core->cons, help_msg_fc);
 		}
 		break;
 	case 'C': // "fC"
@@ -2044,7 +2072,7 @@ static int cmd_flag(void *data, const char *input) {
 				item = r_flag_get (core->flags, p);
 				if (item) {
 					if (!strncmp (q + 1, "base64:", 7)) {
-						dec = (char *) r_base64_decode_dyn (q + 8, -1, NULL);
+						dec = (char *) r_base64_decode_dyn (q + 8, -1, NULL, false);
 						if (dec) {
 							r_flag_item_set_comment (core->flags, item, dec);
 							free (dec);
@@ -2070,26 +2098,26 @@ static int cmd_flag(void *data, const char *input) {
 			}
 			free (p);
 		} else {
-			r_core_cmd_help_match (core, help_msg_f, "fC");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fC", 0, true);
 		}
 		break;
 	case 'o': // "fo"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_f, "fo");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fo", 0, false);
 		} else {
 			r_core_fortune_print_random (core);
 		}
 		break;
 	case 'O': // "fO"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_f, "fO");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fO", 0, false);
 		} else {
 			flag_ordinals (core, input + 1);
 		}
 		break;
 	case 'r': // "fr"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_f, "fr");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fr", 0, false);
 		} else if (input[1] == ' ' && input[2]) {
 			RFlagItem *item = NULL;
 			char *old = str + 1;
@@ -2110,8 +2138,10 @@ static int cmd_flag(void *data, const char *input) {
 				}
 			} else {
 				R_LOG_ERROR ("Cannot find flag with given name");
-				// r_core_cmd_help_contains (core, help_msg_f, "fr");
+				// r_cons_cmd_help_match (core->cons, help_msg_f, "fr", 0, false);
 			}
+		} else {
+			r_core_return_invalid_command (core, "fr", input[1]);
 		}
 		break;
 	case 'N':
@@ -2137,7 +2167,7 @@ static int cmd_flag(void *data, const char *input) {
 			}
 			if (item) {
 				if (r_str_startswith (realname, "base64:")) {
-					char *dec = (char *)r_base64_decode_dyn (realname + 7, -1, NULL);
+					char *dec = (char *)r_base64_decode_dyn (realname + 7, -1, NULL, false);
 					if (dec) {
 						r_flag_item_set_realname (core->flags, item, dec);
 						free (dec);
@@ -2150,7 +2180,7 @@ static int cmd_flag(void *data, const char *input) {
 			}
 			break;
 		}
-		r_core_cmd_help_contains (core, help_msg_f, "fN");
+		r_cons_cmd_help_match (core->cons, help_msg_f, "fN", 0, false);
 		break;
 	case '\0':
 	case 'n': // "fn" "fnj"
@@ -2170,20 +2200,20 @@ static int cmd_flag(void *data, const char *input) {
 		if (input[0] && input[1] == '?') {
 			char cmd[3] = "fn";
 			cmd[1] = input[0];
-			r_core_cmd_help_contains (core, help_msg_f, cmd);
+			r_cons_cmd_help_match (core->cons, help_msg_f, cmd, 0, false);
 			break;
 		}
 		if (input[0] && input[1] == '.') {
 			const int mode = input[2];
-			const RList *list = r_flag_get_list (core->flags, core->addr);
+			const RVecFlagItemPtr *list = r_flag_get_vec (core->flags, core->addr);
 			PJ *pj = NULL;
 			if (mode == 'j') {
 				pj = r_core_pj_new (core);
 				pj_a (pj);
 			}
-			RListIter *iter;
+			RFlagItem **iter;
 			RFlagItem *item;
-			r_list_foreach (list, iter, item) {
+			r_flag_item_vec_foreach (list, iter, item) {
 				switch (mode) {
 				case '*':
 					{
@@ -2227,7 +2257,7 @@ static int cmd_flag(void *data, const char *input) {
 		break;
 	case 'i': // "fi"
 		if (input[1] == '?') {
-			r_core_cmd_help_contains (core, help_msg_f, "fi");
+			r_cons_cmd_help_match (core->cons, help_msg_f, "fi", 0, false);
 		} else if (input[1] == ' ' || (input[1] && input[2] == ' ')) {
 			char *arg = strdup (r_str_trim_head_ro (input + 2));
 			if (*arg) {
@@ -2280,7 +2310,7 @@ static int cmd_flag(void *data, const char *input) {
 				free (nfn);
 				free (orig);
 			} else {
-				r_core_cmd_help (core, help_msg_fD);
+				r_cons_cmd_help (core->cons, help_msg_fD);
 			}
 			break;
 		case '.':
@@ -2291,7 +2321,7 @@ static int cmd_flag(void *data, const char *input) {
 				free (nfn);
 				free (orig);
 			} else {
-				r_core_cmd_help (core, help_msg_fD);
+				r_cons_cmd_help (core->cons, help_msg_fD);
 			}
 			break;
 		case 'j':
@@ -2306,11 +2336,11 @@ static int cmd_flag(void *data, const char *input) {
 				free (nfn);
 				free (orig);
 			} else {
-				r_core_cmd_help (core, help_msg_fD);
+				r_cons_cmd_help (core->cons, help_msg_fD);
 			}
 			break;
 		default:
-			r_core_cmd_help (core, help_msg_fD);
+			r_cons_cmd_help (core->cons, help_msg_fD);
 			break;
 		}
 		break;
@@ -2323,7 +2353,7 @@ static int cmd_flag(void *data, const char *input) {
 			RFlagItem *fi = r_flag_get (core->flags, arg);
 			r_core_return_value (core, fi? 1:0);
 		} else {
-			r_core_cmd_help (core, help_msg_f);
+			r_cons_cmd_help (core->cons, help_msg_f);
 		}
 		break;
 	default:

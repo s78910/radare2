@@ -69,13 +69,12 @@ static ut32 extract_rtm_from_modules(RBinMdmpObj *mdmp, ut32 major, ut32 minor, 
 			if (str_length == 0 || str_length > 256) {
 				continue;
 			}
-			/* Validate bounds: length is in UTF-16 characters, need to multiply by 2 for bytes */
-			if (module->module_name_rva + sizeof (struct minidump_string) + (str_length * 2) > r_buf_size (mdmp->b)) {
+			if (module->module_name_rva + sizeof (struct minidump_string) + str_length > r_buf_size (mdmp->b)) {
 				continue;
 			}
 			memset (module_name, 0, sizeof (module_name));
 			r_str_utf16_to_utf8 ((ut8 *)module_name, str_length * 4,
-				(const ut8 *)(b + sizeof (ut32)), str_length, mdmp->endian);
+				(const ut8 *)(b + sizeof (ut32)), str_length, false);
 
 			/* Extract just the filename from the full path */
 			const char *filename = strrchr (module_name, '\\');
@@ -230,8 +229,7 @@ static RBinInfo *info(RBinFile *bf) {
 
 static RList* libs(RBinFile *bf) {
 	char *ptr = NULL;
-	int i;
-	struct r_bin_pe_lib_t *libs = NULL;
+	RVecPELib *libs = NULL;
 	struct Pe32_r_bin_mdmp_pe_bin *pe32_bin;
 	struct Pe64_r_bin_mdmp_pe_bin *pe64_bin;
 	RList *ret = NULL;
@@ -252,28 +250,30 @@ static RList* libs(RBinFile *bf) {
 		if (!(libs = Pe32_r_bin_pe_get_libs (pe32_bin->bin))) {
 			return ret;
 		}
-		for (i = 0; !libs[i].last; i++) {
-			ptr = r_str_newf ("[0x%.08" PFMT64x "] - %s", pe32_bin->vaddr, libs[i].name);
+		struct r_bin_pe_lib_t *lib;
+		R_VEC_FOREACH (libs, lib) {
+			ptr = r_str_newf ("[0x%.08" PFMT64x "] - %s", pe32_bin->vaddr, lib->name);
 			r_list_append (ret, ptr);
 		}
-		free (libs);
+		RVecPELib_free (libs);
 	}
 	r_list_foreach (mdmp->pe64_bins, it, pe64_bin) {
 		if (!(libs = Pe64_r_bin_pe_get_libs (pe64_bin->bin))) {
 			return ret;
 		}
-		for (i = 0; !libs[i].last; i++) {
-			ptr = r_str_newf ("[0x%.08"PFMT64x"] - %s", pe64_bin->vaddr, libs[i].name);
+		struct r_bin_pe_lib_t *lib;
+		R_VEC_FOREACH (libs, lib) {
+			ptr = r_str_newf ("[0x%.08"PFMT64x"] - %s", pe64_bin->vaddr, lib->name);
 			r_list_append (ret, ptr);
 		}
-		free (libs);
+		RVecPELib_free (libs);
 	}
 	return ret;
 }
 
 static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 	R_RETURN_VAL_IF_FAIL (buf, false);
-	struct r_bin_mdmp_obj *res = r_bin_mdmp_new_buf (buf);
+	struct r_bin_mdmp_obj *res = r_bin_mdmp_new_buf (buf, bf->rbin->sdbdir);
 	if (R_LIKELY (res)) {
 		sdb_ns_set (bf->sdb, "info", res->kv);
 		bf->bo->bin_obj = res;
@@ -282,26 +282,25 @@ static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 	return false;
 }
 
-static RList *sections(RBinFile *bf) {
+static bool sections_vec(RBinFile *bf) {
 	struct minidump_memory_descriptor *memory;
 	struct minidump_memory_descriptor64 *memory64;
 	struct minidump_module *module;
 	struct Pe32_r_bin_mdmp_pe_bin *pe32_bin;
 	struct Pe64_r_bin_mdmp_pe_bin *pe64_bin;
-	RList *pe_secs;
 	RListIter *it, *it0;
 	RBinSection *ptr;
 	ut64 index;
 
 	struct r_bin_mdmp_obj *obj = (struct r_bin_mdmp_obj *)bf->bo->bin_obj;
 
-	RList *ret = r_list_newf (free);
+	RVecRBinSection_clear (&bf->bo->sections_vec);
 
 	/* TODO: Can't remove the memories from this section until get_vaddr is
 	** implemented correctly, currently it is never called!?!? Is it a
 	** relic? */
 	r_list_foreach (obj->streams.memories, it, memory) {
-		ptr = R_NEW0 (RBinSection);
+		ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 		ptr->name = strdup ("Memory_Section");
 		ptr->paddr = (memory->memory).rva;
 		ptr->size = (memory->memory).data_size;
@@ -311,13 +310,11 @@ static RList *sections(RBinFile *bf) {
 		ptr->has_strings = false;
 
 		ptr->perm = r_bin_mdmp_get_perm (obj, ptr->vaddr);
-
-		r_list_append (ret, ptr);
 	}
 
 	index = obj->streams.memories64.base_rva;
 	r_list_foreach (obj->streams.memories64.memories, it, memory64) {
-		ptr = R_NEW0 (RBinSection);
+		ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 		ptr->name = strdup ("Memory_Section");
 		ptr->paddr = index;
 		ptr->size = memory64->data_size;
@@ -327,8 +324,6 @@ static RList *sections(RBinFile *bf) {
 		ptr->has_strings = false;
 
 		ptr->perm = r_bin_mdmp_get_perm (obj, ptr->vaddr);
-
-		r_list_append (ret, ptr);
 
 		index += memory64->data_size;
 	}
@@ -346,15 +341,15 @@ static RList *sections(RBinFile *bf) {
 		if (str_length == 0 || str_length > (ut32)nread - sizeof (ut32)) {
 			continue;
 		}
-		ptr = R_NEW0 (RBinSection);
 		/* utf8 expansion is at most 3/2 of utf16 bytes; *2+1 fits with a nul */
-		ptr->name = calloc (1, str_length * 2 + 1);
-		if (!ptr->name) {
-			free (ptr);
+		char *name = calloc (1, str_length * 2 + 1);
+		if (!name) {
 			continue;
 		}
-		r_str_utf16_to_utf8 ((ut8 *)ptr->name, str_length * 2,
-				b + sizeof (ut32), str_length, obj->endian);
+		r_str_utf16_to_utf8 ((ut8 *)name, str_length * 2,
+				b + sizeof (ut32), str_length, false);
+		ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
+		ptr->name = name;
 		ptr->vaddr = module->base_of_image;
 		ptr->vsize = module->size_of_image;
 		ptr->paddr = r_bin_mdmp_get_paddr (obj, ptr->vaddr);
@@ -362,27 +357,22 @@ static RList *sections(RBinFile *bf) {
 		ptr->add = false;
 		ptr->has_strings = false;
 		ptr->perm = 0;
-		r_list_append (ret, ptr);
 
 		/* Grab the pe sections */
 		r_list_foreach (obj->pe32_bins, it0, pe32_bin) {
 			if (pe32_bin->vaddr == module->base_of_image && pe32_bin->bin) {
-				pe_secs = Pe32_r_bin_mdmp_pe_get_sections(pe32_bin);
-				r_list_join (ret, pe_secs);
-				r_list_free (pe_secs);
+				Pe32_r_bin_mdmp_pe_load_sections (pe32_bin, &bf->bo->sections_vec);
 			}
 		}
 		r_list_foreach (obj->pe64_bins, it0, pe64_bin) {
 			if (pe64_bin->vaddr == module->base_of_image && pe64_bin->bin) {
-				pe_secs = Pe64_r_bin_mdmp_pe_get_sections(pe64_bin);
-				r_list_join (ret, pe_secs);
-				r_list_free (pe_secs);
+				Pe64_r_bin_mdmp_pe_load_sections (pe64_bin, &bf->bo->sections_vec);
 			}
 		}
 	}
 	R_LOG_INFO ("Parsing data sections for large dumps can take time");
 	R_LOG_INFO ("Please be patient (but if strings ain't your thing try with -z)");
-	return ret;
+	return true;
 }
 
 static RList *mem(RBinFile *bf) {
@@ -454,24 +444,12 @@ static RList *mem(RBinFile *bf) {
 	return ret;
 }
 
-static RList* relocs(RBinFile *bf) {
-	struct Pe32_r_bin_mdmp_pe_bin *pe32_bin;
-	struct Pe64_r_bin_mdmp_pe_bin *pe64_bin;
-	RListIter *it;
-	RList* ret = r_list_newf (free);
-	if (!ret) {
-		return NULL;
-	}
+static RVecRBinReloc *relocs(RBinFile *bf) {
 	RBinMdmpObj *mdmp = (RBinMdmpObj*)bf->bo->bin_obj;
-	r_list_foreach (mdmp->pe32_bins, it, pe32_bin) {
-		if (pe32_bin->bin && pe32_bin->bin->relocs) {
-			r_list_join (ret, pe32_bin->bin->relocs);
-		}
-	}
-	r_list_foreach (mdmp->pe64_bins, it, pe64_bin) {
-		if (pe64_bin->bin && pe64_bin->bin->relocs) {
-			r_list_join (ret, pe64_bin->bin->relocs);
-		}
+	RVecRBinReloc *ret = RVecRBinReloc_new ();
+	if (ret) {
+		// filled by imports_vec
+		RVecRBinReloc_swap (ret, &mdmp->relocs);
 	}
 	return ret;
 }
@@ -483,11 +461,12 @@ static bool imports_vec(RBinFile *bf) {
 
 	RVecRBinImport *ret = &bf->bo->imports_vec;
 	RBinMdmpObj *mdmp = (RBinMdmpObj*)bf->bo->bin_obj;
+	RVecRBinReloc_clear (&mdmp->relocs);
 	r_list_foreach (mdmp->pe32_bins, it, pe32_bin) {
-		Pe32_r_bin_mdmp_pe_load_imports (pe32_bin, ret);
+		Pe32_r_bin_mdmp_pe_load_imports (pe32_bin, ret, &mdmp->relocs);
 	}
 	r_list_foreach (mdmp->pe64_bins, it, pe64_bin) {
-		Pe64_r_bin_mdmp_pe_load_imports (pe64_bin, ret);
+		Pe64_r_bin_mdmp_pe_load_imports (pe64_bin, ret, &mdmp->relocs);
 	}
 	return true;
 }
@@ -505,6 +484,107 @@ static bool symbols_vec(RBinFile *bf) {
 	}
 	r_list_foreach (mdmp->pe64_bins, it, pe64_bin) {
 		Pe64_r_bin_mdmp_pe_load_symbols (bf->rbin, pe64_bin, ret);
+	}
+	return true;
+}
+
+static char *module_name(RBinMdmpObj *mdmp, ut64 vaddr) {
+	struct minidump_module *module;
+	RListIter *it;
+	r_list_foreach (mdmp->streams.modules, it, module) {
+		if (module->base_of_image != vaddr) {
+			continue;
+		}
+		ut64 at = module->module_name_rva;
+		ut64 size = r_buf_size (mdmp->b);
+		if (at > size || sizeof (ut32) > size - at) {
+			break;
+		}
+		ut32 utf16_size = r_buf_read_le32_at (mdmp->b, at);
+		at += sizeof (ut32);
+		if (!utf16_size || utf16_size > 4096 || at > size || utf16_size > size - at) {
+			break;
+		}
+		ut8 *utf16 = malloc (utf16_size);
+		char *name = calloc (1, utf16_size * 2 + 1);
+		if (!utf16 || !name || r_buf_read_at (mdmp->b, at, utf16, utf16_size) != utf16_size) {
+			free (utf16);
+			free (name);
+			break;
+		}
+		r_str_utf16_to_utf8 ((ut8 *)name, utf16_size * 2, utf16, utf16_size, false);
+		free (utf16);
+		const char *basename = strrchr (name, '\\');
+		if (!basename) {
+			basename = strrchr (name, '/');
+		}
+		if (basename) {
+			basename++;
+		} else {
+			basename = name;
+		}
+		char *result = strdup (basename);
+		free (name);
+		return result;
+	}
+	return r_str_newf ("0x%08" PFMT64x, vaddr);
+}
+
+static bool rebase_resources(RVecRBinResource *resources, size_t start, ut64 paddr, ut64 vaddr, ut64 image_base, const char *origin) {
+	size_t i;
+	for (i = start; i < RVecRBinResource_length (resources); i++) {
+		RBinResource *resource = RVecRBinResource_at (resources, i);
+		resource->origin = strdup (origin);
+		if (!resource->origin || resource->vaddr < image_base || i > UT32_MAX) {
+			return false;
+		}
+		ut64 offset = resource->vaddr - image_base;
+		if (offset > UT64_MAX - vaddr
+			|| (resource->paddr != UT64_MAX && resource->paddr > UT64_MAX - paddr)) {
+			return false;
+		}
+		resource->vaddr = vaddr + offset;
+		if (resource->paddr != UT64_MAX) {
+			resource->paddr += paddr;
+		}
+		resource->index = (ut32)i;
+	}
+	return true;
+}
+
+static bool load_resources(RBinFile *bf) {
+	R_RETURN_VAL_IF_FAIL (bf && bf->bo && bf->bo->bin_obj, false);
+	RBinMdmpObj *mdmp = bf->bo->bin_obj;
+	struct Pe32_r_bin_mdmp_pe_bin *pe32_bin;
+	struct Pe64_r_bin_mdmp_pe_bin *pe64_bin;
+	RListIter *it;
+	r_list_foreach (mdmp->pe32_bins, it, pe32_bin) {
+		size_t start = RVecRBinResource_length (&bf->bo->resources_vec);
+		if (!Pe32_r_bin_pe_load_resources (pe32_bin->bin, &bf->bo->resources_vec)) {
+			return false;
+		}
+		char *origin = module_name (mdmp, pe32_bin->vaddr);
+		bool ok = origin && rebase_resources (&bf->bo->resources_vec, start,
+			pe32_bin->paddr, pe32_bin->vaddr,
+			Pe32_r_bin_pe_get_image_base (pe32_bin->bin), origin);
+		free (origin);
+		if (!ok) {
+			return false;
+		}
+	}
+	r_list_foreach (mdmp->pe64_bins, it, pe64_bin) {
+		size_t start = RVecRBinResource_length (&bf->bo->resources_vec);
+		if (!Pe64_r_bin_pe_load_resources (pe64_bin->bin, &bf->bo->resources_vec)) {
+			return false;
+		}
+		char *origin = module_name (mdmp, pe64_bin->vaddr);
+		bool ok = origin && rebase_resources (&bf->bo->resources_vec, start,
+			pe64_bin->paddr, pe64_bin->vaddr,
+			Pe64_r_bin_pe_get_image_base (pe64_bin->bin), origin);
+		free (origin);
+		if (!ok) {
+			return false;
+		}
 	}
 	return true;
 }
@@ -534,8 +614,9 @@ RBinPlugin r_bin_plugin_mdmp = {
 	.check = &check,
 	.mem = &mem,
 	.relocs = &relocs,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.symbols_vec = &symbols_vec,
+	.load_resources = &load_resources,
 };
 
 #ifndef R2_PLUGIN_INCORE

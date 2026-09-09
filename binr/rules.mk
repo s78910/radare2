@@ -6,9 +6,12 @@ include ../../shlr/sdb.mk
 
 # despite libs are pic, some systems/compilers dont
 # like relocatable executables, so here we do the magic
-USE_PIE=$(shell echo "$(CC)" | grep -E "emcc|ios-sdk|macos-sdk|tcc|vinix|wasm" >/dev/null && echo 0 || echo 1)
+USE_PIE=$(shell echo "$(CC) $(COMPILER) $(OSTYPE)" | grep -E "emcc|ios-sdk|macos-sdk|tcc|vinix|wasm|wasi" >/dev/null && echo 0 || echo 1)
 
 ifeq (${OSTYPE},solaris)
+USE_PIE := 0
+endif
+ifeq ($(WASM),1)
 USE_PIE := 0
 endif
 
@@ -71,6 +74,10 @@ LINK+=$(LIBR)/lang/libr_lang.a
 LINK+=$(LIBR)/config/libr_config.a
 LINK+=$(LIBR)/muta/libr_muta.a
 LINK+=$(LIBR)/main/libr_main.a
+# libr_anal and libr_bin members reference the java class parser
+LINK+=$(SHLR)/java/libr_java.a
+# extra libs required by XPS static plugins (e.g. libc++ for r2ghidra)
+LINK+=$(EXTERNAL_LINK)
 else ifeq (${COMPILER},wasm)
 LINK+=$(SHLR)/libr_shlr.a
 LINK+=$(SHLR)/../subprojects/sdb/src/libsdb.a

@@ -1136,8 +1136,8 @@ err:
 	return NULL;
 }
 
-static RTable *__new_heapblock_tbl(void) {
-	RTable *tbl = r_table_new ("heap");
+static RTable *__new_heapblock_tbl(RCore *core) {
+	RTable *tbl = r_core_table_new (core, "heap");
 	r_table_add_column (tbl, r_table_type ("number"), "HeaderAddress", -1);
 	r_table_add_column (tbl, r_table_type ("number"), "UserAddress", -1);
 	r_table_add_column (tbl, r_table_type ("number"), "Size", -1);
@@ -1162,7 +1162,7 @@ static void w32_list_heaps(RCore *core, const char format) {
 	PHeapInformation heapInfo = db->HeapInformation;
 	CHECK_INFO (heapInfo);
 	int i;
-	RTable *tbl = r_table_new ("heaps");
+	RTable *tbl = r_core_table_new (core, "heaps");
 	r_table_add_column (tbl, r_table_type ("number"), "Address", -1);
 	r_table_add_column (tbl, r_table_type ("number"), "Blocks", -1);
 	r_table_add_column (tbl, r_table_type ("number"), "Allocated", -1);
@@ -1219,7 +1219,7 @@ static void w32_list_heaps_blocks(RCore *core, const char format) {
 	CHECK_INFO (heapInfo);
 	HeapBlock *block = malloc (sizeof (HeapBlock));
 	int i;
-	RTable *tbl = __new_heapblock_tbl ();
+	RTable *tbl = __new_heapblock_tbl (core);
 	PJ *pj = r_core_pj_new (core);
 	pj_a (pj);
 	for (i = 0; i < heapInfo->count; i++) {
@@ -1265,7 +1265,7 @@ static void w32_list_heaps_blocks(RCore *core, const char format) {
 					pj_end (pj);
 					break;
 				default:
-					r_table_add_rowf (tbl, "xxnnns", address, (ut64)block->dwAddress, block->dwSize, granularity, unusedBytes, type);
+					r_table_add_rowf (tbl, "xxnnns", address, (ut64)block->dwAddress, (ut64)block->dwSize, granularity, unusedBytes, type);
 					break;
 				}
 			} while (GetNextHeapBlock (&heapInfo->heaps[i], block));
@@ -1321,7 +1321,7 @@ static void cmd_debug_map_heap_block_win(RCore *core, const char *input) {
 				type = "";
 			}
 			PJ *pj = r_core_pj_new (core);
-			RTable *tbl = __new_heapblock_tbl ();
+			RTable *tbl = __new_heapblock_tbl (core);
 			ut64 headerAddr = off - granularity;
 			switch (input[0]) {
 			case ' ':
@@ -1356,7 +1356,7 @@ static void cmd_debug_map_heap_block_win(RCore *core, const char *input) {
 		w32_list_heaps_blocks (core, input[0]);
 		break;
 	default:
-		r_core_cmd_help (core, help_msg_block);
+		r_cons_cmd_help (core->cons, help_msg_block);
 	}
 }
 
@@ -1364,7 +1364,7 @@ static int dmh_windows(RCore *core, const char *input) {
 	init_func ();
 	switch (input[0]) {
 	case '?': // dmh?
-		r_core_cmd_help (core, help_msg);
+		r_cons_cmd_help (core->cons, help_msg);
 		break;
 	case 'b': // dmhb
 		cmd_debug_map_heap_block_win (core, input + 1);

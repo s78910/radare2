@@ -44,15 +44,19 @@ static int fs_part_gpt(void *disk, void *ptr, void *closure) {
 	RList *list = (RList *)closure;
 
 	// Read GPT header at LBA 1
-	fs->iob.read_at (fs->iob.io, 512, (ut8 *)&header, sizeof (header));
+	if (fs->iob.read_at (fs->iob.io, 512, (ut8 *)&header, sizeof (header)) != sizeof (header)) {
+		R_LOG_ERROR ("Failed to read GPT header");
+		return 0;
+	}
 	if (memcmp (header.signature, GPT_SIGNATURE, GPT_SIGNATURE_LEN) != 0) {
 		R_LOG_ERROR ("Invalid GPT signature");
 		return 0;
 	}
 
-	ut64 entries_lba = header.partition_entries_lba * 512;
-	ut32 num_entries = header.num_partition_entries;
-	ut32 entry_size = header.partition_entry_size;
+	const ut8 *header_bytes = (const ut8 *)&header;
+	ut64 entries_lba = r_read_le64 (header_bytes + 72) * 512;
+	ut32 num_entries = r_read_le32 (header_bytes + 80);
+	ut32 entry_size = r_read_le32 (header_bytes + 84);
 
 	if (entry_size != 128) {
 		R_LOG_ERROR ("Unsupported partition entry size: %u", entry_size);
@@ -82,23 +86,29 @@ static int fs_part_gpt(void *disk, void *ptr, void *closure) {
 		R_LOG_ERROR ("Failed to allocate memory for GPT partition entries");
 		return 0;
 	}
-	fs->iob.read_at (fs->iob.io, entries_lba, entries, num_entries * entry_size);
+	if (fs->iob.read_at (fs->iob.io, entries_lba, entries, (int)alloc_size) != (int)alloc_size) {
+		R_LOG_ERROR ("Failed to read GPT partition entries");
+		free (entries);
+		return 0;
+	}
 
 	int i;
 	for (i = 0; i < num_entries; i++) {
-		GPTEntry *e = (GPTEntry *)&entries[i * entry_size];
+		const ut8 *e = &entries[i * entry_size];
 		// Check if type_guid is not all zeros
 		bool is_empty = true;
 		int j;
 		for (j = 0; j < 16; j++) {
-			if (e->type_guid[j] != 0) {
+			if (e[j] != 0) {
 				is_empty = false;
 				break;
 			}
 		}
 		if (!is_empty) {
-			ut64 start = e->first_lba * 512;
-			ut64 length = (e->last_lba - e->first_lba + 1) * 512;
+			ut64 first_lba = r_read_le64 (e + 32);
+			ut64 last_lba = r_read_le64 (e + 40);
+			ut64 start = first_lba * 512;
+			ut64 length = (last_lba - first_lba + 1) * 512;
 			par = r_fs_partition_new (i, start, length);
 			par->type = 0; // GPT doesn't have byte type, maybe use index or something
 			iterate (disk, par, list);

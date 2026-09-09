@@ -14,15 +14,15 @@
 
 #define EXCESS (16 + (BLOCK_SIZE / 255))
 
-#define LOAD_16(p) *(ut16*)&g_buf[(p)]
-#define LOAD_32(p) *(ut32*)&g_buf[(p)]
-#define LOAD_32_FROM(p, x)     *(ut32 *)&x[(p)]
-#define COPY_32(d, s) *(ut32*)&g_buf[(d)] = LOAD_32((s))
+#define LOAD_16(p) r_read_le16 (&g_buf[(p)])
+#define LOAD_32(p) r_read_le32 (&g_buf[(p)])
+#define LOAD_32_FROM(p, x) r_read_le32 (&x[(p)])
+#define COPY_32(d, s) r_write_le32 (&g_buf[(d)], LOAD_32 ((s)))
 
 // Using memcpy for these two because they make ASAN happy
 // Avoids the 'misaligned address' error
 #define COPY_32_TO(d, s, x, y) memcpy (&x[d], &y[s], 4)
-#define LOAD_16_TO(p, x)       memcpy (&x, &g_buf[p], 2)
+#define LOAD_16_TO(p, x)       (x) = LOAD_16 (p)
 
 #define HASH_BITS 12
 #define HASH_SIZE (1 << HASH_BITS)
@@ -151,19 +151,23 @@ static int lz4_compress(ut8 *g_buf, const int uc_length, int max_chain) {
 }
 
 R_API int r_lz4_decompress_block(ut8 *g_buf, const int comp_len, int *pp, ut8 *obuf, int osz) {
-	int i, s, len, run, p = 0;
+	int i, run;
 	int ip = obuf? 0: BLOCK_SIZE;
 	int maxLen = obuf? osz: BLOCK_SIZE;
 	int ip_end = ip + comp_len;
 	ut8 *dst = obuf? obuf: g_buf;
 	ut16 tmp = 0;
+	size_t len, s, p = 0;
 
 	for (;;) {
+		if (ip >= ip_end) {
+			break;
+		}
 		const int token = g_buf[ip++];
 		if (token >= 16) {
 			run = token >> 4;
 			if (run == 15) {
-				for (;;) {
+				for (; ip < ip_end;) {
 					const int c = g_buf[ip++];
 					run += c;
 					if (c != 255) {
@@ -171,7 +175,7 @@ R_API int r_lz4_decompress_block(ut8 *g_buf, const int comp_len, int *pp, ut8 *o
 					}
 				}
 			}
-			if ((p + run) > maxLen) {
+			if ((p + run) > maxLen || (ip + run) > ip_end) {
 				return -1;
 			}
 
@@ -184,16 +188,18 @@ R_API int r_lz4_decompress_block(ut8 *g_buf, const int comp_len, int *pp, ut8 *o
 				break;
 			}
 		}
-
+		if (ip >= ip_end - 1) {
+			break;
+		}
 		LOAD_16_TO (ip, tmp);
-		s = p - tmp;
-		ip += 2;
-		if (s < 0) {
+		if (p < tmp) {
 			return -1;
 		}
+		s = p - tmp;
+		ip += 2;
 		len = (token & 15) + MIN_MATCH;
 		if (len == (15 + MIN_MATCH)) {
-			for (;;) {
+			for (; ip < ip_end;) {
 				const int c = g_buf[ip++];
 				len += c;
 				if (c != 255) {

@@ -35,6 +35,12 @@ static bool load(RBinFile *bf, RBuffer *b, ut64 loadaddr) {
 	return check (bf, b);
 }
 
+static bool sfc_header_valid(const sfc_int_hdr *hdr, bool is_hirom) {
+	ut16 comp_check = r_read_le16 (&hdr->comp_check);
+	ut16 checksum = r_read_le16 (&hdr->checksum);
+	return comp_check == (ut16)~checksum && (hdr->rom_setup & 1) == (is_hirom? 1: 0);
+}
+
 static RBinInfo* info(RBinFile *bf) {
 	sfc_int_hdr sfchdr = {{0}};
 	RBinInfo *ret = NULL;
@@ -51,14 +57,14 @@ static RBinInfo* info(RBinFile *bf) {
 		return NULL;
 	}
 
-	if ((sfchdr.comp_check != (ut16)~(sfchdr.checksum)) || ((sfchdr.rom_setup & 0x1) != 0) ) {
+	if (!sfc_header_valid (&sfchdr, false)) {
 		// if the fixed 0x33 byte or the LoROM indication are not found, then let's try interpreting the ROM as HiROM
 		reat = r_buf_read_at (bf->buf, 0xFFC0 + hdroffset, (ut8*)&sfchdr, SFC_HDR_SIZE);
 		if (reat != SFC_HDR_SIZE) {
 			R_LOG_ERROR ("Unable to read SFC/SNES header");
 			return NULL;
 		}
-		if ((sfchdr.comp_check != (ut16)~(sfchdr.checksum)) || ((sfchdr.rom_setup & 0x1) != 1) ) {
+		if (!sfc_header_valid (&sfchdr, true)) {
 			R_LOG_WARN ("Cannot determine if this is a LoROM or HiROM file");
 			// return NULL;
 		}
@@ -75,15 +81,14 @@ static RBinInfo* info(RBinFile *bf) {
 	return ret;
 }
 
-static void addrom(RList *ret, const char *name, int i, ut64 paddr, ut64 vaddr, ut32 size) {
-	RBinSection *ptr = R_NEW0 (RBinSection);
+static void addrom(RBinFile *bf, const char *name, int i, ut64 paddr, ut64 vaddr, ut32 size) {
+	RBinSection *ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 	ptr->name = r_str_newf ("%s_%02x", name, i);
 	ptr->paddr = paddr;
 	ptr->vaddr = vaddr;
 	ptr->size = ptr->vsize = size;
 	ptr->perm = R_PERM_RX;
 	ptr->add = true;
-	r_list_append (ret, ptr);
 }
 
 #if 0
@@ -100,7 +105,7 @@ static void addsym(RList *ret, const char *name, ut64 addr, ut32 size) {
 }
 #endif
 
-static RList* sections(RBinFile *bf) {
+static bool sections_vec(RBinFile *bf) {
 	int hdroffset = 0;
 	bool is_hirom = false;
 	int i;
@@ -114,42 +119,39 @@ static RList* sections(RBinFile *bf) {
 	int reat = r_buf_read_at (bf->buf, 0x7FC0 + hdroffset, (ut8*)&sfchdr, SFC_HDR_SIZE);
 	if (reat != SFC_HDR_SIZE) {
 		R_LOG_ERROR ("Unable to read SFC/SNES header");
-		return NULL;
+		return false;
 	}
 
-	if ((sfchdr.comp_check != (ut16)~(sfchdr.checksum)) || ((sfchdr.rom_setup & 0x1) != 0) ) {
+	if (!sfc_header_valid (&sfchdr, false)) {
 		// if the fixed 0x33 byte or the LoROM indication are not found, then let's try interpreting the ROM as HiROM
 		reat = r_buf_read_at (bf->buf, 0xFFC0 + hdroffset, (ut8*)&sfchdr, SFC_HDR_SIZE);
 		if (reat != SFC_HDR_SIZE) {
 			R_LOG_ERROR ("Unable to read SFC/SNES header");
-			return NULL;
+			return false;
 		}
 
-		if ((sfchdr.comp_check != (ut16)~(sfchdr.checksum)) || ((sfchdr.rom_setup & 0x1) != 1) ) {
+		if (!sfc_header_valid (&sfchdr, true)) {
 			R_LOG_WARN ("Cannot determine if this is a LoROM or HiROM file");
 		}
 		is_hirom = true;
 	}
 
-	RList *ret = r_list_new ();
-	if (!ret) {
-		return NULL;
-	}
+	RVecRBinSection_clear (&bf->bo->sections_vec);
 	if (is_hirom) {
 		for (i = 0; i < ((bf->size - hdroffset) / 0x8000) ; i++) {
 			// XXX check integer overflow here
-			addrom (ret, "ROM",i,hdroffset + i * 0x8000, 0x400000 + (i * 0x8000), 0x8000);
+			addrom (bf, "ROM", i, hdroffset + i * 0x8000, 0x400000 + (i * 0x8000), 0x8000);
 			if (i % 2) {
-				addrom (ret, "ROM_MIRROR", i, hdroffset + i * 0x8000,(i * 0x8000), 0x8000);
+				addrom (bf, "ROM_MIRROR", i, hdroffset + i * 0x8000, i * 0x8000, 0x8000);
 			}
 		}
 
 	} else {
 		for (i = 0; i < ((bf->size - hdroffset)/ 0x8000) ; i++) {
-			addrom (ret,"ROM",i,hdroffset + i*0x8000,0x8000 + (i*0x10000), 0x8000);
+			addrom (bf, "ROM", i, hdroffset + i * 0x8000, 0x8000 + (i * 0x10000), 0x8000);
 		}
 	}
-	return ret;
+	return true;
 }
 
 static RList *mem(RBinFile *bf) {
@@ -245,7 +247,7 @@ RBinPlugin r_bin_plugin_sfc = {
 	.load = &load,
 	.check = &check,
 	.entries = &entries,
-	.sections = sections,
+	.sections_vec = &sections_vec,
 	.info = &info,
 	.mem = &mem,
 };

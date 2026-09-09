@@ -2,32 +2,6 @@
 
 #include <r_anal.h>
 
-static int defaultCycles(RAnalOp *op) {
-	switch (op->type) {
-	case R_ANAL_OP_TYPE_PUSH:
-	case R_ANAL_OP_TYPE_POP:
-	case R_ANAL_OP_TYPE_STORE:
-	case R_ANAL_OP_TYPE_LOAD:
-		return 2;
-	case R_ANAL_OP_TYPE_LEA:
-	case R_ANAL_OP_TYPE_MOV:
-	case R_ANAL_OP_TYPE_NOP:
-		return 1;
-	case R_ANAL_OP_TYPE_TRAP:
-	case R_ANAL_OP_TYPE_SWI:
-		return 4;
-	case R_ANAL_OP_TYPE_SYNC:
-		return 4;
-	case R_ANAL_OP_TYPE_RET:
-	case R_ANAL_OP_TYPE_JMP:
-	case R_ANAL_OP_TYPE_RJMP:
-	case R_ANAL_OP_TYPE_CALL:
-		return 4;
-	default:
-		return 1;
-	}
-}
-
 // R2R db/asm/arm.v35_64 db/asm/arm.gnu_32 db/anal/arm db/asm/arm.gnu_wd_32
 // XXX deprecate!! or at least call r_arch_bath tradition
 R_API int r_anal_opasm(RAnal *anal, ut64 addr, const char *s, ut8 *outbuf, int outlen) {
@@ -182,7 +156,7 @@ R_API int r_anal_op(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *data, int le
 		}
 		return -1;
 	}
-	int ret = R_MIN (2, len);
+	int ret = -1;
 	if (len > 0 && anal->arch->session) {
 		r_anal_op_set_bytes (op, addr, data, len);
 		if (!r_arch_session_decode (anal->arch->session, op, mask) || op->size <= 0) {
@@ -215,14 +189,8 @@ R_API int r_anal_op(RAnal *anal, RAnalOp *op, ut64 addr, const ut8 *data, int le
 		if (op->nopcode < 1) {
 			op->nopcode = 1;
 		}
-	} else if (!memcmp (data, "\xff\xff\xff\xff", R_MIN (4, len))) {
-		ret = -1;
+	} else {
 		op->type = R_ANAL_OP_TYPE_ILL;
-		op->size = 1;
-		op->type = R_ANAL_OP_TYPE_MOV; // XXX ?
-		if (op->cycles == 0) {
-			op->cycles = defaultCycles (op);
-		}
 	}
 	if (!op->mnemonic && (mask & R_ARCH_OP_MASK_DISASM)) {
 		if (anal->verbose) {
@@ -711,10 +679,13 @@ R_API int r_anal_op_hint(RAnalOp *op, RAnalHint *hint) {
 // imho this should not iterate, should be just a helper to get that value
 R_API int r_anal_op_reg_delta(RAnal *anal, ut64 addr, const char *name) {
 	ut8 buf[32];
-	anal->iob.read_at (anal->iob.io, addr, buf, sizeof (buf));
+	const int nread = anal->iob.read_at (anal->iob.io, addr, buf, sizeof (buf));
+	if (nread < 1) {
+		return 0;
+	}
 	RAnalOp op = {0};
 	RAnalValue *dst = NULL;
-	if (r_anal_op (anal, &op, addr, buf, sizeof (buf), R_ARCH_OP_MASK_ALL) > 0) {
+	if (r_anal_op (anal, &op, addr, buf, nread, R_ARCH_OP_MASK_ALL) > 0) {
 		dst = RVecRArchValue_at (&op.dsts, 0);
 		if (dst && dst->reg && (!name || !strcmp (dst->reg, name))) {
 			if (RVecRArchValue_length (&op.srcs) > 0) {

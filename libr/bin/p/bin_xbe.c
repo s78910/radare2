@@ -19,13 +19,121 @@ static bool check(RBinFile *bf, RBuffer *b) {
 	return false;
 }
 
+static bool read_xbe_header(RBuffer *b, xbe_header *h) {
+	ut8 buf[sizeof (*h)];
+	if (r_buf_read_at (b, 0, buf, sizeof (buf)) != sizeof (buf)) {
+		return false;
+	}
+	const ut8 *p = buf;
+	h->magic = r_read_le32 (p);
+	p += sizeof (ut32);
+	memcpy (h->signature, p, sizeof (h->signature));
+	p += sizeof (h->signature);
+	h->base = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->headers_size = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->image_size = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->image_header_size = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->timestamp = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->cert_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->sections = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->sechdr_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->init_flags = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->ep = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->tls_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	int i;
+	for (i = 0; i < R_ARRAY_SIZE (h->pe_shit); i++) {
+		h->pe_shit[i] = r_read_le32 (p);
+		p += sizeof (ut32);
+	}
+	h->debug_path_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->debug_name_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->debug_uname_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->kernel_thunk_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->nonkernel_import_dir_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->lib_versions = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->lib_versions_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->kernel_lib_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	h->xapi_lib_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	for (i = 0; i < R_ARRAY_SIZE (h->shit); i++) {
+		h->shit[i] = r_read_le32 (p);
+		p += sizeof (ut32);
+	}
+	return h->magic == XBE_MAGIC;
+}
+
+static bool read_xbe_section(RBuffer *b, ut64 addr, xbe_section *sect) {
+	ut8 buf[sizeof (*sect)];
+	if (r_buf_read_at (b, addr, buf, sizeof (buf)) != sizeof (buf)) {
+		return false;
+	}
+	const ut8 *p = buf;
+	sect->flags = r_read_le32 (p);
+	p += sizeof (ut32);
+	sect->vaddr = r_read_le32 (p);
+	p += sizeof (ut32);
+	sect->vsize = r_read_le32 (p);
+	p += sizeof (ut32);
+	sect->offset = r_read_le32 (p);
+	p += sizeof (ut32);
+	sect->size = r_read_le32 (p);
+	p += sizeof (ut32);
+	sect->name_addr = r_read_le32 (p);
+	p += sizeof (ut32);
+	sect->refcount = r_read_le32 (p);
+	p += sizeof (ut32);
+	int i;
+	for (i = 0; i < R_ARRAY_SIZE (sect->shit); i++) {
+		sect->shit[i] = r_read_le32 (p);
+		p += sizeof (ut32);
+	}
+	memcpy (sect->digest, p, sizeof (sect->digest));
+	return true;
+}
+
+static bool read_xbe_lib(RBuffer *b, ut64 addr, xbe_lib *lib) {
+	ut8 buf[sizeof (*lib)];
+	if (r_buf_read_at (b, addr, buf, sizeof (buf)) != sizeof (buf)) {
+		return false;
+	}
+	const ut8 *p = buf;
+	memcpy (lib->name, p, sizeof (lib->name));
+	p += sizeof (lib->name);
+	lib->major = r_read_le16 (p);
+	p += sizeof (ut16);
+	lib->minor = r_read_le16 (p);
+	p += sizeof (ut16);
+	lib->build = r_read_le16 (p);
+	p += sizeof (ut16);
+	lib->flags = r_read_le16 (p);
+	return true;
+}
+
 static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 	r_bin_xbe_obj_t *obj = R_NEW (r_bin_xbe_obj_t);
 	if (!obj) {
 		return false;
 	}
-	st64 r = r_buf_read_at (buf, 0, (ut8 *)&obj->header, sizeof (obj->header));
-	if (r != sizeof (obj->header)) {
+	if (!read_xbe_header (buf, &obj->header)) {
 		R_FREE (obj);
 		return false;
 	}
@@ -83,28 +191,23 @@ static RList *entries(RBinFile *bf) {
 	return ret;
 }
 
-static RList *sections(RBinFile *bf) {
+static bool sections_vec(RBinFile *bf) {
 	xbe_section *sect = NULL;
 	r_bin_xbe_obj_t *obj = NULL;
 	xbe_header *h = NULL;
-	RList *ret = NULL;
 	char tmp[0x100];
 	int i, r;
 	ut32 addr;
 
 	if (!bf || !bf->bo || !bf->bo->bin_obj || !bf->buf) {
-		return NULL;
+		return false;
 	}
 	obj = bf->bo->bin_obj;
 	h = &obj->header;
 	if (h->sections < 1) {
-		return NULL;
+		return false;
 	}
-	ret = r_list_new ();
-	if (!ret) {
-		return NULL;
-	}
-	ret->free = free;
+	RVecRBinSection_clear (&bf->bo->sections_vec);
 	if (h->sections < 1 || h->sections > 255) {
 		goto out_error;
 	}
@@ -116,24 +219,23 @@ static RList *sections(RBinFile *bf) {
 	if (addr > bf->size || addr + (sizeof (xbe_section) * h->sections) > bf->size) {
 		goto out_error;
 	}
-	r = r_buf_read_at (bf->buf, addr, (ut8 *) sect, sizeof (xbe_section) * h->sections);
-	if (r < 1) {
-		goto out_error;
+	for (i = 0; i < h->sections; i++) {
+		if (!read_xbe_section (bf->buf, addr + (sizeof (xbe_section) * i), &sect[i])) {
+			goto out_error;
+		}
 	}
 	for (i = 0; i < h->sections; i++) {
-		RBinSection *item = R_NEW0 (RBinSection);
 		addr = sect[i].name_addr - h->base;
 		tmp[0] = 0;
 		if (addr > bf->size || addr + sizeof (tmp) > bf->size) {
-			free (item);
 			goto out_error;
 		}
 		r = r_buf_read_at (bf->buf, addr, (ut8 *) tmp, sizeof (tmp));
 		if (r < 1) {
-			free (item);
 			goto out_error;
 		}
 		tmp[sizeof (tmp) - 1] = 0;
+		RBinSection *item = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 		item->name = r_str_newf ("%s.%i", tmp, i);
 		item->paddr = sect[i].offset;
 		item->vaddr = sect[i].vaddr;
@@ -148,20 +250,19 @@ static RList *sections(RBinFile *bf) {
 		if (sect[i].flags & SECT_FLAG_W) {
 			item->perm |= R_PERM_W;
 		}
-		r_list_append (ret, item);
 	}
 	free (sect);
-	return ret;
+	return true;
 out_error:
-	r_list_free (ret);
+	RVecRBinSection_clear (&bf->bo->sections_vec);
 	free (sect);
-	return NULL;
+	return false;
 }
 
 static RList *libs(RBinFile *bf) {
 	r_bin_xbe_obj_t *obj;
 	xbe_header *h = NULL;
-	int i, off, libs, r;
+	int i, off, libs;
 	xbe_lib lib;
 	RList *ret;
 	char *s;
@@ -185,8 +286,7 @@ static RList *libs(RBinFile *bf) {
 	if (off > bf->size || off + sizeof (xbe_lib) > bf->size) {
 		goto out_error;
 	}
-	r = r_buf_read_at (bf->buf, off, (ut8 *) &lib, sizeof (xbe_lib));
-	if (r < 1) {
+	if (!read_xbe_lib (bf->buf, off, &lib)) {
 		goto out_error;
 	}
 	lib.name[7] = 0;
@@ -202,8 +302,7 @@ static RList *libs(RBinFile *bf) {
 	if (off > bf->size || off + sizeof (xbe_lib) > bf->size) {
 		goto out_error;
 	}
-	r = r_buf_read_at (bf->buf, off, (ut8 *) &lib, sizeof (xbe_lib));
-	if (r < 1) {
+	if (!read_xbe_lib (bf->buf, off, &lib)) {
 		goto out_error;
 	}
 
@@ -221,8 +320,7 @@ static RList *libs(RBinFile *bf) {
 		if (addr > bf->size || addr + sizeof (xbe_lib) > bf->size) {
 			goto out_error;
 		}
-		r = r_buf_read_at (bf->buf, addr, (ut8 *) &lib, sizeof (xbe_lib));
-		if (r < 1) {
+		if (!read_xbe_lib (bf->buf, addr, &lib)) {
 			goto out_error;
 		}
 		// make sure it ends with 0
@@ -269,8 +367,7 @@ static bool symbols_vec(RBinFile *bf) {
 		if (addr > bf->size || addr + sizeof (sect) > bf->size) {
 			return false;
 		}
-		st64 r = r_buf_read_at (bf->buf, addr, (ut8 *) &sect, sizeof (sect));
-		if (r != sizeof (sect)) {
+		if (!read_xbe_section (bf->buf, addr, &sect)) {
 			return false;
 		}
 		if (kt_addr >= sect.vaddr && kt_addr < sect.vaddr + sect.vsize) {
@@ -284,9 +381,13 @@ static bool symbols_vec(RBinFile *bf) {
 	if (addr > bf->size || addr + sizeof (thunk_addr) > bf->size) {
 		return false;
 	}
-	i = r_buf_read_at (bf->buf, addr, (ut8 *) &thunk_addr, sizeof (thunk_addr));
-	if (i != sizeof (thunk_addr)) {
+	ut8 thunk_buf[sizeof (thunk_addr)];
+	i = r_buf_read_at (bf->buf, addr, thunk_buf, sizeof (thunk_buf));
+	if (i != sizeof (thunk_buf)) {
 		return false;
+	}
+	for (i = 0; i < XBE_MAX_THUNK; i++) {
+		thunk_addr[i] = r_read_le32 (thunk_buf + (i * sizeof (ut32)));
 	}
 	for (i = 0; i < XBE_MAX_THUNK && thunk_addr[i]; i++) {
 		const ut32 thunk_index = thunk_addr[i] ^ 0x80000000;
@@ -297,7 +398,7 @@ static bool symbols_vec(RBinFile *bf) {
 			sym->name = r_bin_name_new_from (r_str_newf ("kt.%s", kt_name[thunk_index - 1]));
 			sym->vaddr = (h->kernel_thunk_addr ^ obj->kt_key) + (4 * i);
 			sym->paddr = sym->vaddr - h->base;
-			sym->size = 4;
+			sym->attr.size = 4;
 			sym->ordinal = i;
 		}
 	}
@@ -344,7 +445,7 @@ RBinPlugin r_bin_plugin_xbe = {
 	.baddr = &baddr,
 	.binsym = &binsym,
 	.entries = &entries,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.symbols_vec = &symbols_vec,
 	.info = &info,
 	.libs = &libs,

@@ -62,6 +62,7 @@ R_LIB_VERSION_HEADER(r_core);
 #define R_FLAGS_FS_SEGMENTS "segments"
 #define R_FLAGS_FS_SIGNS "sign"
 #define R_FLAGS_FS_STRINGS "strings"
+#define R_FLAGS_FS_TRYCATCH "trycatch"
 #define R_FLAGS_FS_SYMBOLS "symbols"
 #define R_FLAGS_FS_SYMBOLS_SECTIONS "symbols.sections"
 #define R_FLAGS_FS_SYSCALLS "syscalls"
@@ -99,6 +100,7 @@ typedef struct r_core_plugin_session_t {
 	RCore *core;
 	struct r_core_plugin_t *plugin;
 	void *data; // plugin instance data
+	bool command_registered;
 } RCorePluginSession;
 
 typedef bool (*RCorePluginLife) (RCorePluginSession *ctx);
@@ -108,8 +110,18 @@ typedef struct r_core_plugin_t {
 	RPluginMeta meta;
 	RCorePluginLife init;
 	RCorePluginLife fini;
-	RCorePluginCall call;
+	RCorePluginCall call; // legacy callback receiving the complete input line
+	const char *command; // command prefix registered automatically for call_ctx
+	RCmdCtxCb call_ctx; // ctx->handler_user is this plugin's session
 } RCorePlugin;
+
+// script embedded in the binary, registered by static plugins and run at startup like plugins/*.r2.js
+typedef struct r_core_script_t {
+	char *name;
+	char *lang; // "qjs", "r2" or any lang plugin name
+	char *code;
+	int codelen;
+} RCoreScript;
 
 typedef struct r_core_rtr_host_t {
 	int proto;
@@ -324,23 +336,38 @@ typedef struct {
 	int y;
 } VisualMark;
 
+typedef struct r_core_esil_stepback_t {
+	char *expr;
+	ut64 addr;
+} RCoreEsilStepBack;
+
+typedef struct r_esil_cmds_t {
+	char *intr;
+	char *trap;
+	char *mdev;
+	char *todo;
+	char *step;
+	char *step_out;
+	char *ioer;
+	char *mdev_range;
+} REsilCmds;
+
+typedef struct r_esil_stepback_t {
+	RList list;
+	RStrBuf revert;
+	ut64 old_pc;
+	ut32 max;
+	ut32 v_reg;
+	ut32 v_mem;
+	ut32 v_bits;
+	ut32 v_alias;
+} REsilStepback;
+
 typedef struct r_core_esil_t {
 	REsil esil;
-	union {
-		RStrBuf trap_revert;
-		ut64 old_pc;
-	};
-	ut32 tr_reg;
-	ut32 tr_mem;
 	RReg *reg;
-	char *cmd_step;	// command to run before a step is performed
-	char *cmd_step_out; // command to run after a step is performed
-	char *cmd_intr; // command to run when an interrupt occurs
-	char *cmd_trap; // command to run when a trap occurs
-	char *cmd_mdev; // command to run when an memory mapped device address is used
-	char *cmd_todo; // command to run when esil expr contains TODO
-	char *cmd_ioer; // command to run when esil fails to IO
-	char *mdev_range; // string containing the r_str_range to match for read/write accesses
+	REsilCmds cmds;
+	REsilStepback sb;
 	ut8 cfg;
 } RCoreEsil;
 
@@ -389,7 +416,6 @@ struct r_core_t {
 	RAGraph *graph;
 	RPanelsRoot *panels_root;
 	RPanels* panels;
-	RList *cmdqueue;
 	RMagic *magic;
 	char *lastcmd;
 	char *cmdlog;
@@ -412,9 +438,9 @@ struct r_core_t {
 	bool in_search;
 	RList *watchers;
 	RList *scriptstack;
+	RList *scripts; // embedded startup scripts (RCoreScript)
 	RCoreTaskScheduler tasks;
 	int max_cmd_depth;
-	int cur_cmd_depth;
 	ut8 switch_file_view;
 	Sdb *sdb;
 	int incomment;
@@ -538,7 +564,7 @@ R_API bool r_core_prompt_loop(RCore *core);
 R_API ut64 r_core_pava(RCore *core, ut64 addr);
 R_API int r_core_cmd(RCore *core, const char *cmd, bool log);
 R_API int r_core_cmd_task_sync(RCore *core, const char *cmd, bool log);
-R_API char *r_core_editor(const RCore *core, const char *file, const char *str);
+R_API char *r_core_editor(const RCore *core, const char *file, const char *str, R_OUT bool * R_NULLABLE canceled);
 R_API int r_core_fgets(RCons *cons, char *buf, int len);
 R_API RFlagItem *r_core_flag_get_by_spaces(RFlag *f, bool prionospace, ut64 off);
 // CMD
@@ -568,10 +594,12 @@ R_API R_MUSTUSE char *r_core_cmd_strf_at(RCore *core, ut64 addr, const char *fmt
 R_API R_MUSTUSE char *r_core_cmd_str_pipe(RCore *core, const char *cmd);
 R_API R_MUSTUSE RBuffer *r_core_cmd_tobuf(RCore *core, const char *cmd);
 R_API bool r_core_cmd_file(RCore *core, const char *file);
+R_API R_MUSTUSE char *r_core_cmd_file_str(RCore *core, const char *file, R_OUT bool * R_NULLABLE ok);
 R_API bool r_core_cmd_lines(RCore *core, const char *lines);
 R_API bool r_core_cmd_command(RCore *core, const char *command);
 R_API void r_core_af(RCore *core, ut64 addr, const char *name, bool anal_calls);
 R_API bool r_core_run_script(RCore *core, const char *file);
+R_API void r_core_script_embed(RCore *core, const char *name, const char *lang, const char *code, int codelen);
 R_API bool r_core_seek(RCore *core, ut64 addr, bool rb);
 R_API bool r_core_visual_bit_editor(RCore *core);
 R_API int r_core_seek_base(RCore *core, const char *hex);
@@ -585,6 +613,7 @@ R_API void r_core_seek_arch_bits(RCore *core, ut64 addr);
 R_API ut8 *r_core_readblock(RCore *core, ut64 size);
 R_API int r_core_block_read(RCore *core);
 R_API int r_core_block_size(RCore *core, int bsize);
+R_API ut32 r_core_block_size_get(RCore *core);
 R_API int r_core_seek_size(RCore *core, ut64 addr, int bsize);
 R_API bool r_core_shift_block(RCore *core, ut64 addr, ut64 b_size, st64 dist);
 R_API void r_core_autocomplete(RCore *core, RLineCompletion *completion, RLineBuffer *buf, RLinePromptType prompt_type);
@@ -634,6 +663,7 @@ R_API char *r_core_anal_hasrefs_to_depth(RCore *core, ut64 value, PJ *pj, int de
 R_API void r_core_link_stroff(RCore *core, RAnalFunction *fcn);
 R_API void r_core_anal_inflags(RCore *core, const char *glob);
 R_API bool cmd_anal_objc(RCore *core, const char *input, bool auto_anal);
+R_API bool r_core_anal_objc_recover_classes(RCore *core);
 R_API void r_core_anal_cc_init(RCore *core);
 R_API void r_core_anal_paths(RCore *core, ut64 from, ut64 to, bool followCalls, int followDepth, bool is_json);
 R_API void r_core_anal_esil_function(RCore *core, ut64 addr); /// TODO: better name and move to anal
@@ -711,7 +741,7 @@ R_API char *r_core_disassemble_instr(RCore *core, ut64 addr, int l);
 R_API char *r_core_disassemble_bytes(RCore *core, ut64 addr, int b);
 
 /* carg.c */
-R_API RList *r_core_get_func_args(RCore *core, const char *func_name);
+R_API RList *r_core_get_func_args(RCore *core, const char *func_name, bool incall);
 R_API void r_core_print_func_args(RCore *core);
 R_API int r_core_get_stacksz(RCore *core, ut64 from, ut64 to);
 
@@ -719,6 +749,7 @@ R_API int r_core_get_stacksz(RCore *core, ut64 from, ut64 to);
 R_API RAnalOp* r_core_anal_op(RCore *core, ut64 addr, int mask);
 R_IPI int core_type_by_addr(RCore *core, ut64 addr);
 R_API void r_core_anal_esil(RCore *core, const char *str, const char *addr);
+R_API void r_core_anal_plt_stubs(RCore *core);
 R_API void r_core_anal_fcn_merge(RCore *core, ut64 addr, ut64 addr2);
 R_API const char *r_core_anal_optype_colorfor(RCore *core, ut64 addr, ut8 ch, bool verbose);
 R_API ut64 r_core_anal_address(RCore *core, ut64 addr);
@@ -737,8 +768,19 @@ R_API void r_core_anal_callgraph(RCore *core, ut64 addr, int fmt);
 R_API int r_core_anal_refs(RCore *core, const char *input);
 R_API void r_core_agraph_print(RCore *core, int use_utf, const char *input);
 R_API bool r_core_esil_cmd(REsil *esil, const char *cmd, ut64 a1, ut64 a2);
+typedef enum r_core_esil_step_status_t {
+	R_CORE_ESIL_STEP_STATUS_DONE,
+	R_CORE_ESIL_STEP_STATUS_INTERRUPTED,
+	R_CORE_ESIL_STEP_STATUS_TIMEOUT,
+	R_CORE_ESIL_STEP_STATUS_MAXSTEPS,
+	R_CORE_ESIL_STEP_STATUS_BREAKPOINT,
+	R_CORE_ESIL_STEP_STATUS_INVALID,
+	R_CORE_ESIL_STEP_STATUS_IOTRAP,
+	R_CORE_ESIL_STEP_STATUS_TRAP,
+	R_CORE_ESIL_STEP_STATUS_ERROR,
+} RCoreEsilStepStatus;
+R_API RCoreEsilStepStatus r_core_esil_step_until(RCore *core, ut64 until_addr, const char *until_expr, ut64 *prev_addr, bool stepOver, ut64 *stop_addr);
 R_API int r_core_esil_step(RCore *core, ut64 until_addr, const char *until_expr, ut64 *prev_addr, bool stepOver);
-R_API bool r_core_esil_step_back(RCore *core);
 R_API ut64 r_core_anal_get_bbaddr(RCore *core, ut64 addr);
 R_API bool r_core_anal_bb_seek(RCore *core, ut64 addr);
 R_API bool r_core_anal_fcn(RCore *core, ut64 at, ut64 from, int reftype, int depth);
@@ -767,8 +809,8 @@ R_API RVecAnalRef *r_core_anal_fcn_get_calls(RCore *core, RAnalFunction *fcn); /
 typedef struct r_core_asm_hit {
 	char *code;
 	int len;
-	ut64 addr;
 	ut8 valid;
+	ut64 addr;
 } RCoreAsmHit;
 
 R_API RBuffer *r_core_syscall(RCore *core, const char *name, const char *args);
@@ -808,7 +850,10 @@ R_API bool r_core_esil_init(RCore *core);
 R_API void r_core_esil_fini(RCoreEsil *cesil);
 R_API void r_core_esil_load_arch(RCore *core);
 R_API void r_core_esil_unload_arch(RCore *core);
-R_API void r_core_esil_single_step(RCore *core);
+R_API bool r_core_esil_run_expr_at(RCore *core, const char *expr, ut64 addr);
+R_API bool r_core_esil_single_step(RCore *core);
+R_API bool r_core_esil_stepback(RCore *core);
+R_API void r_core_esil_set_max_stepback(RCore *core, ut32 max_stepback);
 
 // both do the same, we should get rid of one of them
 R_API bool r_core_bin_raise(RCore *core, ut32 bfid);
@@ -826,7 +871,6 @@ R_API ut64 r_core_bin_impaddr(RBin *bin, int va, const char *name);
 
 // XXX - this is kinda hacky, maybe there should be a way to
 // refresh the bin environment without specific calls?
-R_API int r_core_pseudo_code(RCore *core, const char *input);
 
 /* gdiff.c */
 R_API bool r_core_zdiff(RCore *c, RCore *c2);
@@ -879,7 +923,7 @@ R_API void r_core_anal_plugin_data_refs(RCore *core);
 #define R_CORE_BIN_ACC_TRYCATCH 0x20000000
 #define R_CORE_BIN_ACC_SECTIONS_MAPPING (ut64)0x40000000
 #define R_CORE_BIN_ACC_TYPES (ut64) 0x80000000
-#define R_CORE_BIN_ACC_ALL	(ut64) 0xD04FFF
+#define R_CORE_BIN_ACC_ALL	((ut64)0xD04FFF | R_CORE_BIN_ACC_TRYCATCH)
 
 #define R_CORE_PRJ_FLAGS	0x0001
 #define R_CORE_PRJ_EVAL		0x0002
@@ -988,14 +1032,9 @@ typedef char *(*PrintItemCallback)(void *user, void *p, bool selected);
 R_API char *r_str_widget_list(void *user, RList *list, int rows, int cur, PrintItemCallback cb);
 R_API PJ *r_core_pj_new(RCore *core);
 R_API RTable *r_core_table_new(RCore *core, const char *title);
+R_API char *r_core_md2txt(RCore *core, const char *md, bool slide_titles);
 
 /* help */
-R_API void r_core_cmd_help(const RCore *core, RCoreHelpMessage help);
-R_API void r_core_cmd_help_json(const RCore *core, RCoreHelpMessage help);
-R_API int r_core_cmd_help_match(const RCore *core, RCoreHelpMessage help, const char * R_NONNULL cmd);
-R_API void r_core_cmd_help_match_spec(const RCore *core, const char * const help[], const char * R_NONNULL cmd, char spec);
-R_API void r_core_cmd_help_contains(const RCore *core, RCoreHelpMessage help, const char * R_NONNULL cmd);
-R_API void r_core_cmd_help_contains_spec(const RCore *core, const char * const help[], const char * R_NONNULL cmd, char spec);
 
 /* anal stats */
 
@@ -1052,6 +1091,7 @@ extern RCorePlugin r_core_plugin_java;
 extern RCorePlugin r_core_plugin_prj;
 extern RCorePlugin r_core_plugin_writedwarf;
 extern RCorePlugin r_core_plugin_agD;
+extern RCorePlugin r_core_plugin_pseudo;
 
 R_IPI void r_core_plugins_init(RCmd *cmd);
 R_IPI void r_core_plugins_load(RCmd *cmd);

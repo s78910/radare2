@@ -111,9 +111,7 @@ R_IPI bool r_bin_name_is_unnamed(const char *name) {
 	}
 	if (r_str_startswith (name, "UnknownModule")) {
 		const char *p = name + strlen ("UnknownModule");
-		while (isdigit (*p)) {
-			p++;
-		}
+		p = r_str_trim_head_digits (p);
 		return *p == '_' && is_hex_number (p + 1);
 	}
 	return false;
@@ -190,32 +188,7 @@ R_API char *r_bin_filter_name(RBinFile *bf, HtSU *db, ut64 vaddr, const char *na
 R_IPI bool r_bin_filter_sym(RBinFile *bf, HtPP *ht, ut64 vaddr, RBinSymbol *sym) {
 	R_RETURN_VAL_IF_FAIL (ht && sym && sym->name, false);
 	const char *name = r_bin_name_tostring2 (sym->name, 'o');
-	if (bf && bf->bo && bf->bo->lang) {
-		const char *lang = r_bin_lang_tostring (bf->bo->lang);
-		char *dn = r_bin_demangle (bf, lang, name, sym->vaddr, false);
-		if (R_STR_ISNOTEMPTY (dn)) {
-			r_bin_name_demangled (sym->name, dn);
-			// extract class information from demangled symbol name
-			// swift demangled names follow Module.Type.member pattern
-			char *p = strchr (dn, '.');
-			if (p) {
-				char *p2 = strchr (p + 1, '.');
-				if (p2 && isupper (*dn) && isupper (p[1])) {
-					// Module.Class.method - use Module.Class as classname
-					sym->classname = r_str_ndup (dn, p2 - dn);
-				} else if (isupper (*dn)) {
-					sym->classname = r_str_ndup (dn, p - dn);
-				} else if (isupper (p[1])) {
-					sym->classname = strdup (p + 1);
-					char *dot = strchr (sym->classname, '.');
-					if (dot) {
-						*dot = 0;
-					}
-				}
-			}
-		}
-		free (dn);
-	}
+	r_bin_register_symbol_language (bf, sym);
 	char *oname = r_str_newf ("o.0.%c.%s", sym->is_imported ? 'i' : 's', name);
 	char *uname = r_str_newf ("%" PFMT64x ".%c.%s", vaddr, sym->is_imported ? 'i' : 's', name);
 	bool res = ht_pp_insert (ht, uname, sym);
@@ -241,14 +214,13 @@ R_IPI bool r_bin_filter_sym(RBinFile *bf, HtPP *ht, ut64 vaddr, RBinSymbol *sym)
 	return true;
 }
 
-R_API void r_bin_filter_sections(RBinFile *bf, RList *list) {
-	RBinSection *sec;
+R_API void r_bin_filter_sections_vec(RBinFile *bf, RVecRBinSection *sections) {
 	HtPP *db = ht_pp_new (NULL, section_name_state_free, NULL);
-	RListIter *iter;
 	if (!db) {
 		return;
 	}
-	r_list_foreach (list, iter, sec) {
+	RBinSection *sec;
+	R_VEC_FOREACH (sections, sec) {
 		if (!sec->name) {
 			continue;
 		}
@@ -501,15 +473,18 @@ R_API bool r_bin_string_filter(RBin *bin, const char *str, ut64 addr) {
 R_API bool r_bin_file_string_delete(RBinFile *bf, ut64 vaddr, ut64 len, char type) {
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo && vaddr != UT64_MAX, false);
 	RBinObject *bo = bf->bo;
-	RBinString *bs = ht_up_find (bo->strings_db, vaddr, NULL);
+	HtUP *strings_db = r_bin_object_ensure_strings_db (bo);
+	RBinString *bs = r_bin_strings_index_get (&bo->strings, strings_db, vaddr);
 	if (!bs) {
 		return false;
 	}
+	size_t index = bs - R_VEC_START_ITER (&bo->strings);
 	if ((len > 0 && bs->length != len) || (type && bs->type != type)) {
 		return false;
 	}
-	ht_up_delete (bo->strings_db, vaddr);
-	r_list_delete_data (bo->strings, bs);
+	ut64 deleted_vaddr = bs->vaddr;
+	RVecRBinString_remove (&bo->strings, index);
+	r_bin_strings_index_update_after_remove (&bo->strings, strings_db, deleted_vaddr, index);
 	return true;
 }
 
@@ -550,12 +525,7 @@ static char *extract_wide_string(const ut8 *buf, st64 len, int charsize, ut32 *o
 R_API RBinString *r_bin_file_string_add(RBinFile *bf, ut64 paddr, ut64 vaddr, ut64 max_len, int type) {
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo, NULL);
 	RBinObject *bo = bf->bo;
-	if (!bo->strings) {
-		bo->strings = r_list_newf ((RListFree)r_bin_string_free);
-	}
-	if (!bo->strings_db) {
-		bo->strings_db = ht_up_new0 ();
-	}
+	HtUP *strings_db = r_bin_object_ensure_strings_db (bo);
 	if (max_len < 1 || max_len > 512) {
 		max_len = 512;
 	}
@@ -571,35 +541,37 @@ R_API RBinString *r_bin_file_string_add(RBinFile *bf, ut64 paddr, ut64 vaddr, ut
 	if (type == 0) {
 		type = detect_string_type (buf, len);
 	}
-	RBinString *bs = R_NEW0 (RBinString);
+	RBinString bs = { 0 };
 	ut32 actual_len = 0, actual_size = 0;
-	int i;
 	switch (type) {
 	case R_STRING_TYPE_WIDE:
-		bs->string = extract_wide_string (buf, len, 2, &actual_len, &actual_size);
+		bs.string = extract_wide_string (buf, len, 2, &actual_len, &actual_size);
 		break;
 	case R_STRING_TYPE_WIDE32:
-		bs->string = extract_wide_string (buf, len, 4, &actual_len, &actual_size);
+		bs.string = extract_wide_string (buf, len, 4, &actual_len, &actual_size);
 		break;
 	default:
-		for (i = 0; i < len && buf[i] && IS_PRINTABLE (buf[i]); i++) {
-			actual_len++;
-		}
+		actual_len = (ut32)r_str_pnlen ((const char *)buf, (int)len);
 		actual_size = actual_len + 1;
-		bs->string = r_str_ndup ((char *)buf, actual_len);
+		bs.string = r_str_ndup ((char *)buf, actual_len);
 		break;
 	}
 	free (buf);
-	if (!bs->string) {
-		bs->string = strdup ("");
+	if (!bs.string) {
+		bs.string = strdup ("");
 	}
-	bs->paddr = paddr;
-	bs->vaddr = vaddr;
-	bs->size = actual_size;
-	bs->length = actual_len;
-	bs->type = type;
-	bs->ordinal = r_list_length (bo->strings);
-	r_list_append (bo->strings, bs);
-	ht_up_insert (bo->strings_db, bs->vaddr, bs);
-	return bs;
+	bs.paddr = paddr;
+	bs.vaddr = vaddr;
+	bs.size = actual_size;
+	bs.length = actual_len;
+	bs.type = type;
+	bs.ordinal = RVecRBinString_length (&bo->strings);
+	RBinString *dst = RVecRBinString_emplace_back (&bo->strings);
+	if (!dst) {
+		r_bin_string_fini (&bs);
+		return NULL;
+	}
+	*dst = bs;
+	r_bin_strings_index_insert (strings_db, dst->vaddr, RVecRBinString_length (&bo->strings) - 1);
+	return dst;
 }

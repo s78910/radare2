@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <r_lib.h>
 #if R2__UNIX__
+#include <unistd.h>
 #include <sys/time.h>
 #include <sys/mman.h>
 #include <limits.h>
@@ -188,6 +189,17 @@ R_API bool r_file_is_directory(const char *str) {
 	return S_IFDIR == (S_IFDIR & buf.st_mode);
 }
 
+static bool is_writable_directory(const char *path) {
+	if (R_STR_ISEMPTY (path) || !r_file_is_directory (path)) {
+		return false;
+	}
+#if R2__WINDOWS__
+	return true;
+#else
+	return !access (path, W_OK | X_OK);
+#endif
+}
+
 // TODO: rename to existf .. or maybe not
 R_API bool r_file_fexists(const char *fmt, ...) {
 	R_RETURN_VAL_IF_FAIL (fmt, false);
@@ -347,17 +359,15 @@ R_API char *r_stdin_readline(int *sz) {
 	char buf[4096];
 	for (;;) {
 		int n = read (0, buf, sizeof (buf));
+		if (n < 1 && l > 0) {
+			break;
+		}
 		if (n < 1) {
 			r_strbuf_free (sb);
 			return NULL;
 		}
 		r_strbuf_append_n (sb, buf, n);
 		l += n;
-		if (0 && buf[n - 1] == '\n') {
-			l--;
-			buf[n - 1] = 0;
-			break;
-		}
 		if (n < sizeof (buf)) {
 			break;
 		}
@@ -821,19 +831,17 @@ R_API char *r_file_slurp_lines(const char *file, int line, int count) {
 
 R_API char *r_file_root(const char *root, const char *path) {
 	R_RETURN_VAL_IF_FAIL (root && path, NULL);
-	char *ret, *s = r_str_replace (strdup (path), "..", "", 1);
+	char *s = r_str_replace (strdup (path), "..", "", 1);
 	// XXX ugly hack
-	while (strstr (s, "..")) {
-		s = r_str_replace (s, "..", "", 1);
+	s = r_str_replace (s, "./", "", 1);
+	s = r_str_replace (s, "//", "", 1);
+	RStrs sp = r_strs_from (s);
+	r_strs_skip_chars (&sp, "/");
+	size_t rlen = strlen (root);
+	while (rlen > 0 && root[rlen - 1] == R_SYS_DIR[0]) {
+		rlen--;
 	}
-	while (strstr (s, "./")) {
-		s = r_str_replace (s, "./", "", 1);
-	}
-	while (strstr (s, "//")) {
-		s = r_str_replace (s, "//", "", 1);
-	}
-	ret = r_str_append (strdup (root), R_SYS_DIR);
-	ret = r_str_append (ret, s);
+	char *ret = r_str_newf ("%.*s%s%s", (int)rlen, root, R_SYS_DIR, sp.a);
 	free (s);
 	return ret;
 }
@@ -1127,7 +1135,8 @@ R_API char *r_file_tmpdir(void) {
 		}
 	} else {
 		tmpdir[len] = 0;
-		DWORD (WINAPI *glpn)(LPCTSTR, LPCTSTR, DWORD) = r_lib_dl_sym (GetModuleHandle (TEXT ("kernel32.dll")), W32_TCALL("GetLongPathName"));
+		// GetModuleHandleA because TEXT() casts instead of converting
+		DWORD (WINAPI *glpn)(LPCTSTR, LPCTSTR, DWORD) = r_lib_dl_sym (GetModuleHandleA ("kernel32.dll"), W32_TCALL("GetLongPathName"));
 		if (glpn) {
 			// Windows XP sometimes returns short path name
 			glpn (tmpdir, tmpdir, MAX_PATH + 1);
@@ -1144,10 +1153,10 @@ R_API char *r_file_tmpdir(void) {
 	}
 #else
 	char *path = r_sys_getenv ("XDG_RUNTIME_DIR");
-	if (R_STR_ISEMPTY (path) || !r_file_is_directory (path)) {
+	if (!is_writable_directory (path)) {
 		free (path);
 		path = r_sys_getenv ("TMPDIR");
-		if (path && !*path) {
+		if (!is_writable_directory (path)) {
 			R_FREE (path);
 		}
 	}
@@ -1163,7 +1172,7 @@ R_API char *r_file_tmpdir(void) {
 #endif
 	}
 #endif
-	if (!r_file_is_directory (path)) {
+	if (!is_writable_directory (path)) {
 		free (path);
 		// Always default to "/tmp"
 		path = strdup ("/tmp");

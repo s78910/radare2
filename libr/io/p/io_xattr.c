@@ -1,4 +1,4 @@
-/* radare - LGPL - Copyright 2022 - pancake */
+/* radare - LGPL - Copyright 2022-2026 - pancake */
 
 #include <r_io.h>
 #include <r_lib.h>
@@ -11,7 +11,7 @@
 # define r_listxattr(x,y,z) listxattr(x,y,z,0)
 # define r_getxattr(x,y,z,u) getxattr(x,y,z,u,0,0)
 # define r_setxattr(x,y,z,u,v) setxattr(x,y,z,u,v,0)
-#elif __linux__
+#elif __linux__ && !R2_UEFI
 #define HAS_XATTR 1
 # define r_listxattr listxattr
 # define r_getxattr getxattr
@@ -99,14 +99,14 @@ static RIODesc *__open(RIO *io, const char *pathname, int rw, int mode) {
 	mal->size = size;
 	mal->buf = attrvalue;
 	return r_io_desc_new (io, &r_io_plugin_xattr, pathname,
-		R_PERM_RW | (rw & R_PERM_X), mode, mal);
+		rw & R_PERM_RWX, mode, mal);
 }
 
 static bool __close(RIODesc *fd) {
 	RIOMalloc *riom = fd->data;
 	char *attrname;
 	char *path = split_xattr_uri (fd->name, &attrname);
-	if (attrname && riom->buf && riom->size > 0) {
+	if ((fd->perm & R_PERM_W) && attrname && riom->buf && riom->size > 0) {
 		write_xattr (path, attrname, riom->buf, riom->size);
 	}
 	free (path);

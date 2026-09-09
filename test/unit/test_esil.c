@@ -39,14 +39,18 @@ static bool test_mem_write(void *mem, ut64 addr, const ut8 *buf, int len) {
 }
 
 typedef struct {
+	RReg *reg;
 	int alias;
 	char name[16];
+	char old_name[16];
 } TestRegAliasVoyeur;
 
 static void test_reg_alias_voyeur(void *user, int alias, const char *name) {
 	TestRegAliasVoyeur *test = user;
+	const char *old_name = r_reg_alias_getname (test->reg, alias);
 	test->alias = alias;
 	r_str_ncpy (test->name, name, sizeof (test->name));
+	r_str_ncpy (test->old_name, r_str_get (old_name), sizeof (test->old_name));
 }
 
 bool test_setup_keeps_custom_interfaces(void) {
@@ -65,8 +69,13 @@ bool test_setup_keeps_custom_interfaces(void) {
 		.mem_read = test_mem_read,
 		.mem_write = test_mem_write,
 	};
-	REsil *esil = r_esil_new_ex (32, false, 32, &reg_if, &mem_if, NULL);
-	mu_assert_notnull (esil, "r_esil_new_ex failed");
+	REsilOptions opt = r_esil_options (NULL, NULL);
+	opt.stacksize = 32;
+	opt.addrsize = 32;
+	opt.ifaces.reg = reg_if;
+	opt.ifaces.mem = mem_if;
+	REsil *esil = r_esil_new (&opt);
+	mu_assert_notnull (esil, "r_esil_new failed");
 	RAnal *anal = r_anal_new ();
 	mu_assert_notnull (anal, "r_anal_new failed");
 
@@ -88,7 +97,10 @@ bool test_setup_keeps_custom_interfaces(void) {
 }
 
 bool test_setup_installs_default_interfaces(void) {
-	REsil *esil = r_esil_new (32, false, 32);
+	REsilOptions opt = r_esil_options (NULL, NULL);
+	opt.stacksize = 32;
+	opt.addrsize = 32;
+	REsil *esil = r_esil_new (&opt);
 	mu_assert_notnull (esil, "r_esil_new failed");
 	RAnal *anal = r_anal_new ();
 	mu_assert_notnull (anal, "r_anal_new failed");
@@ -121,6 +133,7 @@ bool test_reg_alias_op(void) {
 	mu_assert_true (profile, "failed to set reg profile");
 
 	TestRegAliasVoyeur voyeur = {
+		.reg = anal->reg,
 		.alias = -1,
 	};
 	ut32 vid = r_esil_add_voyeur (anal->esil, &voyeur,
@@ -131,8 +144,49 @@ bool test_reg_alias_op(void) {
 	mu_assert_true (parsed, "failed to parse reg alias op");
 	mu_assert_streq (r_reg_alias_getname (anal->reg, R_REG_ALIAS_PC), "r1", "PC alias was not updated");
 	mu_assert_eq (voyeur.alias, R_REG_ALIAS_PC, "PC alias voyeur was not called");
+	mu_assert_streq (voyeur.old_name, "r0", "PC alias voyeur did not see old register");
 	mu_assert_streq (voyeur.name, "r1", "PC alias voyeur had wrong register");
 
+	r_anal_free (anal);
+	mu_end;
+}
+
+bool test_define_op(void) {
+	RAnal *anal = r_anal_new ();
+	mu_assert_notnull (anal, "r_anal_new failed");
+	bool profile = r_reg_set_profile_string (anal->reg,
+		"=PC r0\n"
+		"=A0 r0\n"
+		"gpr r0 .16 0 0\n"
+		"gpr r1 .16 16 0");
+	mu_assert_true (profile, "failed to set reg profile");
+
+	bool defined = r_esil_define (anal->esil, "TRIPLE", "DUP,DUP,+,+", 1, 1, R_ESIL_OP_TYPE_MATH);
+	mu_assert_true (defined, "failed to define op");
+	bool parsed = r_esil_parse (anal->esil, "5,TRIPLE,r1,=");
+	mu_assert_true (parsed, "failed to parse defined op");
+	mu_assert_eq (r_reg_getv (anal->reg, "r1"), 15, "defined op computed wrong value");
+
+	// redefining replaces the expansion in place
+	defined = r_esil_define (anal->esil, "TRIPLE", "1,+", 1, 1, R_ESIL_OP_TYPE_MATH);
+	mu_assert_true (defined, "failed to redefine op");
+	parsed = r_esil_parse (anal->esil, "5,TRIPLE,r1,=");
+	mu_assert_true (parsed, "failed to parse redefined op");
+	mu_assert_eq (r_reg_getv (anal->reg, "r1"), 6, "redefined op computed wrong value");
+
+	r_anal_free (anal);
+	mu_end;
+}
+
+bool test_define_recursion(void) {
+	RAnal *anal = r_anal_new ();
+	mu_assert_notnull (anal, "r_anal_new failed");
+	// a self-referencing definition must trap instead of overflowing the C stack
+	bool defined = r_esil_define (anal->esil, "LOOP", "1,LOOP", 1, 0, R_ESIL_OP_TYPE_MATH);
+	mu_assert_true (defined, "failed to define recursive op");
+	bool parsed = r_esil_parse (anal->esil, "LOOP");
+	mu_assert_false (parsed, "recursive definition did not stop");
+	mu_assert_eq (anal->esil->trap, 1, "recursive definition did not trap");
 	r_anal_free (anal);
 	mu_end;
 }
@@ -141,5 +195,7 @@ int main(int argc, char **argv) {
 	mu_run_test (test_setup_keeps_custom_interfaces);
 	mu_run_test (test_setup_installs_default_interfaces);
 	mu_run_test (test_reg_alias_op);
+	mu_run_test (test_define_op);
+	mu_run_test (test_define_recursion);
 	return tests_passed != tests_run;
 }

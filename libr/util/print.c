@@ -397,10 +397,29 @@ R_API void r_print_cursor(RPrint *p, int cur, int len, int set) {
 	}
 }
 
+static int r_print_addr_base(RPrint *p) {
+	if (p) {
+		if (p->coreb.cfgGetI) {
+			ut64 base = p->coreb.cfgGetI (p->coreb.core, "asm.addr.base");
+			if (base == 8 || base == 10 || base == 16 || base == 36) {
+				return (int)base;
+			}
+		}
+		if (p->base36) {
+			return 36;
+		}
+		if (p->flags & R_PRINT_FLAGS_ADDRDEC) {
+			return 10;
+		}
+	}
+	return 16;
+}
+
 static int r_print_addr_tostring(RPrint *p, ut64 addr, char *buf, size_t buf_size) {
 	bool use_segoff = p ? (p->flags & R_PRINT_FLAGS_SEGOFF) : false;
 	bool use_color = p ? (p->flags & R_PRINT_FLAGS_COLOR) : false;
-	bool dec = p ? (p->flags & R_PRINT_FLAGS_ADDRDEC) : false;
+	int addrbase = r_print_addr_base (p);
+	bool dec = addrbase == 10;
 	bool mod = p ? (p->flags & R_PRINT_FLAGS_ADDRMOD) : false;
 	char ch = p ? ((p->addrmod && mod) ? ((addr % p->addrmod) ? ' ' : ',') : ' ') : ' ';
 	if (p && (p->flags & R_PRINT_FLAGS_COMPACT) && p->col == 1) {
@@ -423,6 +442,20 @@ static int r_print_addr_tostring(RPrint *p, ut64 addr, char *buf, size_t buf_siz
 		}
 	}
 	// Note: Color_RESET is only needed in use_color paths, so it's inlined directly in those format strings
+	if (addrbase == 8) {
+		if (use_color) {
+			return snprintf (buf, buf_size, "%s0%" PFMT64o Color_RESET "%c", pre, addr, ch);
+		}
+		return snprintf (buf, buf_size, "0%" PFMT64o "%c", addr, ch);
+	}
+	if (addrbase == 36) {
+		char b36str[16];
+		b36_fromnum (b36str, addr);
+		if (use_color) {
+			return snprintf (buf, buf_size, "%s%s" Color_RESET "%c", pre, b36str, ch);
+		}
+		return snprintf (buf, buf_size, "%s%c", b36str, ch);
+	}
 	if (use_segoff) {
 		const ut32 a = addr & 0xffff;
 		const ut32 s = (addr - a) >> ((p && p->config) ? p->config->seggrn : 4);
@@ -455,6 +488,17 @@ static int r_print_addr_tostring(RPrint *p, ut64 addr, char *buf, size_t buf_siz
 	return snprintf (buf, buf_size, "0x%08" PFMT64x "%c", addr, ch);
 }
 
+static char *r_print_font_render_cfg(RPrint *p, const char *key, const char *s) {
+	const char *font = (p && p->coreb.cfgGet)? p->coreb.cfgGet (p->coreb.core, key): NULL;
+	return R_STR_ISNOTEMPTY (font)? r_font_render (s, font): NULL;
+}
+
+static void r_print_font_print_cfg(RPrint *p, const char *key, const char *s) {
+	char *rendered = r_print_font_render_cfg (p, key, s);
+	r_print_printf (p, "%s", rendered? rendered: s);
+	free (rendered);
+}
+
 R_API bool r_print_addr_strbuf(RPrint *p, RStrBuf *sb, ut64 addr) {
 	R_RETURN_VAL_IF_FAIL (sb, false);
 	char buf[64];
@@ -465,7 +509,7 @@ R_API bool r_print_addr_strbuf(RPrint *p, RStrBuf *sb, ut64 addr) {
 static void r_print_addr(RPrint *p, ut64 addr) {
 	char buf[64];
 	r_print_addr_tostring (p, addr, buf, sizeof (buf));
-	r_print_printf (p, "%s", buf);
+	r_print_font_print_cfg (p, "scr.font.addr", buf);
 }
 
 static int print_offset_len(ut64 off, bool with_delta) {
@@ -481,32 +525,52 @@ static int print_offset_len(ut64 off, bool with_delta) {
 
 R_API bool r_print_offset_strbuf(RPrint *p, RStrBuf *sb, ut64 off, int invert, int delta, const char *label) {
 	R_RETURN_VAL_IF_FAIL (p && p->config && sb, false);
-	const int offdec = (p->flags & R_PRINT_FLAGS_ADDRDEC) != 0;
+	const int addrbase = r_print_addr_base (p);
+	const int offdec = addrbase == 10;
 	const int segbas = p->config->segbas;
 	const int seggrn = p->config->seggrn;
 	const int offseg = (p->flags & R_PRINT_FLAGS_SEGOFF) != 0;
-	const bool base36 = p->coreb.cfgGetB? p->coreb.cfgGetB (p->coreb.core, "asm.addr.base36"): p->base36;
+	const bool base8 = addrbase == 8;
+	const bool base36 = addrbase == 36;
 	char space[32] = { 0 };
 	const char *reset = p->resetbg? Color_RESET: Color_RESET_NOBG;
 	const bool show_color = p->flags & R_PRINT_FLAGS_COLOR;
+	char rgbstr[32];
+	const char *k = "";
+	const char *inv = "";
 	bool ok = true;
 
 	if (show_color) {
-		char rgbstr[32];
 		RCons *cons = p->consb.cons;
-		const char *k = (cons && cons->context)? cons->context->pal.addr: "";
-		const char *inv = invert? R_CONS_INVERT (true, true): "";
+		k = (cons && cons->context)? cons->context->pal.addr: "";
+		inv = invert? R_CONS_INVERT (true, true): "";
 		if ((p->flags & R_PRINT_FLAGS_RAINBOW) && cons && cons->rgbstr) {
 			k = cons->rgbstr (cons, rgbstr, sizeof (rgbstr), off);
 		}
 		if (!k) {
 			k = "";
 		}
-		if (base36) {
-			char b36str[16];
-			b36_fromnum (b36str, off);
+	}
+	if (base8) {
+		if (show_color) {
+			ok &= r_strbuf_appendf (sb, "%s%s0%" PFMT64o "%s", k, inv, off, reset);
+		} else {
+			ok &= r_strbuf_appendf (sb, "0%" PFMT64o, off);
+		}
+		return ok && r_strbuf_append (sb, " ");
+	}
+	if (base36) {
+		char b36str[16];
+		b36_fromnum (b36str, off);
+		if (show_color) {
 			ok &= r_strbuf_appendf (sb, "%s%s%s%s", k, inv, b36str, reset);
-		} else if (offseg) {
+		} else {
+			ok &= r_strbuf_append (sb, b36str);
+		}
+		return ok && r_strbuf_append (sb, " ");
+	}
+	if (show_color) {
+		if (offseg) {
 			ut32 s, a;
 			r_num_segaddr (off, segbas, seggrn, &s, &a);
 			if (offdec) {
@@ -592,7 +656,7 @@ R_API void r_print_offset(RPrint *p, ut64 off, int invert, int delta, const char
 R_API char* r_print_hexpair(RPrint *p, const char *str, int n) {
 	R_RETURN_VAL_IF_FAIL (p && str, NULL);
 	const char *s, *lastcol = Color_WHITE;
-	char *d, *dst = (char *) calloc ((strlen (str) + 2), 32);
+	RStrBuf *sb = r_strbuf_new ("");
 	int colors = p->flags & R_PRINT_FLAGS_COLOR;
 	const char *color_0x00 = "";
 	const char *color_0x7f = "";
@@ -618,25 +682,17 @@ R_API char* r_print_hexpair(RPrint *p, const char *str, int n) {
 		cur = ocur;
 	}
 	ocur++;
-	d = dst;
-// XXX: overflow here
-// TODO: Use r_cons primitives here
-#define memcat(x, y)\
-	{ \
-		memcpy ((x), (y), strlen (y));\
-		(x) += strlen (y);\
-	}
 	for (s = str, i = 0; *s; i++) {
 		int d_inc = 2;
 		if (p->cur_enabled) {
 			if (i == ocur - n) {
-				memcat (d, Color_RESET);
+				r_strbuf_append (sb, Color_RESET);
 			}
 			if (colors) {
-				memcat (d, lastcol);
+				r_strbuf_append (sb, lastcol);
 			}
 			if (i >= cur - n && i < ocur - n) {
-				memcat (d, Color_INVERT);
+				r_strbuf_append (sb, R_CONS_INVERT (true, true));
 			}
 		}
 		if (colors) {
@@ -657,27 +713,25 @@ R_API char* r_print_hexpair(RPrint *p, const char *str, int n) {
 				}
 				lastcol = IS_PRINTABLE (ch) ? color_text: color_other;
 			}
-			memcat (d, lastcol);
+			r_strbuf_append (sb, lastcol);
 		}
 		if (s[0] == '.') {
 			d_inc = 1;
 		}
-		memcpy (d, s, d_inc);
-		d += d_inc;
+		r_strbuf_append_n (sb, s, d_inc);
 		s += d_inc;
 		if (bs) {
-			memcat (d, " ");
+			r_strbuf_append (sb, " ");
 		}
 	}
 	if (colors || p->cur_enabled) {
 		if (p->resetbg) {
-			memcat (d, Color_RESET);
+			r_strbuf_append (sb, Color_RESET);
 		} else {
-			memcat (d, Color_RESET_NOBG);
+			r_strbuf_append (sb, Color_RESET_NOBG);
 		}
 	}
-	*d = '\0';
-	return dst;
+	return r_strbuf_drain (sb);
 }
 
 #define P(x) (p->consb.cons && p->consb.cons->context->pal.x)? p->consb.cons->context->pal.x
@@ -1200,7 +1254,7 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 					r_print_printf (p, "%s", " ");
 				}
 				if (!hex_style) {
-					r_print_printf (p, "%s", " comment");
+					r_print_font_print_cfg (p, "scr.font.cmt", " comment");
 				}
 			}
 			r_print_printf (p, "%s", "\n");
@@ -1306,9 +1360,7 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 					int left = len - i;
 					// TODO: check step. it should be 2/4 for base(32) and 8 for base64
 					ut64 n = 0;
-					size_t sz_n = (base == 64)
-						? (base == 24) ? 3 : sizeof (ut64) : (step == 2)
-						? sizeof (ut16) : sizeof (ut32);
+					size_t sz_n = (base == 64)? sizeof (ut64): (step == 2)? sizeof (ut16): sizeof (ut32);
 					sz_n = R_MIN (left, sz_n);
 					if (j + sz_n > len) {
 						// oob
@@ -1408,16 +1460,20 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 					oPrintValue = printValue;
 					j += step - 1;
 				} else if (base == -8) {
-					long long w = r_read_ble64 (buf + j, be);
-					r_print_cursor (p, j, 8, 1);
-					r_print_printf (p, "%23" PFMT64d " ", (st64)w);
-					r_print_cursor (p, j, 8, 0);
+					if (j + 7 < len) {
+						long long w = r_read_ble64 (buf + j, be);
+						r_print_cursor (p, j, 8, 1);
+						r_print_printf (p, "%23" PFMT64d " ", (st64)w);
+						r_print_cursor (p, j, 8, 0);
+					}
 					j += 7;
 				} else if (base == -9) {
-					st64 w = r_read_ble64 (buf + j, be);
-					r_print_cursor (p, j, 8, 1);
-					r_print_printf (p, "%23" PFMT64u " ", (st64)w);
-					r_print_cursor (p, j, 8, 0);
+					if (j + 7 < len) {
+						st64 w = r_read_ble64 (buf + j, be);
+						r_print_cursor (p, j, 8, 1);
+						r_print_printf (p, "%23" PFMT64u " ", (st64)w);
+						r_print_cursor (p, j, 8, 0);
+					}
 					j += 7;
 				} else if (base == -2) { // pxu1
 					ut8 w = buf[j];
@@ -1438,13 +1494,13 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 					}
 					j += 1;
 				} else if (base == 48) { // px3
-					if (j + 1 < len) {
+					if (j + 2 < len) {
 						ut32 w = r_read_ble24 (buf + j, be);
 						r_print_cursor (p, j, 3, 1);
 						r_print_printf (p, "0x%06x ", (w & 0xFFFFff));
 						r_print_cursor (p, j, 3, 0);
 					}
-					j += 1;
+					j += 2;
 				} else if (base == -11) { // pxu2
 					if (j + 1 < len) {
 						ut16 w = r_read_ble16 (buf + j, be);
@@ -1619,8 +1675,11 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 						a = p->offname (p->user, addr + j);
 						if (p->colorfor && R_STR_ISNOTEMPTY (a)) {
 							const char *color = p->colorfor (p->user, addr + j, addr + j, true);
-							r_print_printf (p, "%s  ; %s%s", r_str_get (color), a,
-									color ? Color_RESET : "");
+							r_print_printf (p, "%s  ; ", r_str_get (color));
+							r_print_font_print_cfg (p, "scr.font.flag", a);
+							if (color) {
+								r_print_printf (p, "%s", Color_RESET);
+							}
 						}
 					}
 					char *comment = p->get_comments (p->user, addr + j);
@@ -1643,11 +1702,13 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 									*nl = 0;
 								}
 								if (first) {
-									r_print_printf (p, "%s 2; %s", a, q);
+									r_print_printf (p, "%s 2; ", a);
+									r_print_font_print_cfg (p, "scr.font.cmt", q);
 									first = false;
 								} else {
 									char *a = r_str_pad (NULL, 0, ' ', 8 + (p->cols * 4));
-									r_print_printf (p, "%s; %s", a, q);
+									r_print_printf (p, "%s; ", a);
+									r_print_font_print_cfg (p, "scr.font.cmt", q);
 									free (a);
 								}
 						// 		r_print_printf (p, "\n");
@@ -1659,7 +1720,8 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 							}
 							free (s);
 						} else {
-							r_print_printf (p, "%s ; %s", a, comment);
+							r_print_printf (p, "%s ; ", a);
+							r_print_font_print_cfg (p, "scr.font.cmt", comment);
 							// r_print_printf (p, "\n");
 						}
 						free (comment);
@@ -1700,6 +1762,27 @@ R_API void r_print_hexdump(RPrint *p, ut64 addr, const ut8 *buf, int len, int ba
 			}
 		}
 	}
+}
+
+static int print_strbuf_printf(RCons *cons, const char *fmt, ...) {
+	RStrBuf *sb = cons->user;
+	int len = r_strbuf_length (sb);
+	va_list ap;
+	va_start (ap, fmt);
+	bool appended = r_strbuf_vappendf (sb, fmt, ap);
+	va_end (ap);
+	return appended? r_strbuf_length (sb) - len: -1;
+}
+
+R_API void r_print_hexdump_strbuf(RPrint *p, RStrBuf *sb, ut64 addr, const ut8 *buf, int len, int base, int step, size_t zoomsz) {
+	R_RETURN_IF_FAIL (p && sb);
+	RCons cons = { 0 };
+	cons.context = p->consb.cons? p->consb.cons->context: NULL;
+	cons.user = sb;
+	RPrint print = *p;
+	print.consb.cons = &cons;
+	print.consb.cb_printf = print_strbuf_printf;
+	r_print_hexdump (&print, addr, buf, len, base, step, zoomsz);
 }
 
 R_API void r_print_hexdump_simple(const ut8 *buf, int len) {
@@ -2123,7 +2206,9 @@ R_API void r_print_zoom_buf(RPrint *p, RPrintZoomCallback cb, void *user, ut64 f
 			if (p->consb.cons->context->breaked) {
 				break;
 			}
-			p->iob.read_at (p->iob.io, from + j, bufz2, size);
+			if (p->iob.read_at (p->iob.io, from + j, bufz2, size) != size) {
+				break;
+			}
 			bufz[i] = cb (user, p->zoom->mode, from + j, bufz2, size);
 			j += size;
 		}

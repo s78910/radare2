@@ -17,16 +17,14 @@ static inline const char *get_xrefname(RCore *core, ut64 addr) {
 }
 
 static const char *get_refname(RCore *core, ut64 addr) {
-	const RList *list = r_flag_get_list (core->flags, addr);
-	if (list) {
-		RFlagItem *item;
-		RListIter *iter;
-		r_list_foreach (list, iter, item) {
-			if (!item->name || !r_str_startswith (item->name, "sym.")) {
-				continue;
-			}
-			return item->name;
+	const RVecFlagItemPtr *list = r_flag_get_vec (core->flags, addr);
+	RFlagItem **iter;
+	RFlagItem *item;
+	r_flag_item_vec_foreach (list, iter, item) {
+		if (!item->name || !r_str_startswith (item->name, "sym.")) {
+			continue;
 		}
+		return item->name;
 	}
 	return NULL;
 }
@@ -71,13 +69,10 @@ static RFlagItem *get_sym_flag_at(RCore *core, ut64 addr) {
 	if (!core || !core->flags) {
 		return NULL;
 	}
-	const RList *list = r_flag_get_list (core->flags, addr);
-	if (!list) {
-		return NULL;
-	}
-	RListIter *it;
+	const RVecFlagItemPtr *list = r_flag_get_vec (core->flags, addr);
+	RFlagItem **it;
 	RFlagItem *fi;
-	r_list_foreach (list, it, fi) {
+	r_flag_item_vec_foreach (list, it, fi) {
 		if (fi && fi->name && r_str_startswith (fi->name, "sym.")) {
 			return fi;
 		}
@@ -278,13 +273,13 @@ R_API bool r_sign_deserialize(RAnal *a, RSignItem *it, const char *k, const char
 		switch (st) {
 		case R_SIGN_RAWNAME: {
 			DBL_VAL_FAIL (it->rawname, R_SIGN_RAWNAME);
-			char *dec = (char *)r_base64_decode_dyn (token, -1, NULL);
+			char *dec = (char *)r_base64_decode_dyn (token, -1, NULL, false);
 			it->rawname = dec? dec: strdup (token);
 			break;
 		}
 		case R_SIGN_DEMANGLED: {
 			DBL_VAL_FAIL (it->demangled, R_SIGN_DEMANGLED);
-			char *dec = (char *)r_base64_decode_dyn (token, -1, NULL);
+			char *dec = (char *)r_base64_decode_dyn (token, -1, NULL, false);
 			it->demangled = dec? dec: strdup (token);
 			break;
 		}
@@ -572,7 +567,7 @@ static char *serialize_value(RSignItem *it) {
 	return r_strbuf_drain (sb);
 }
 
-static RList *deserialize_sign_space(RAnal *a, RSpace *space) {
+static RList *deserialize_sign_space(RAnal *a, const RSpace *space) {
 	R_RETURN_VAL_IF_FAIL (a && space, NULL);
 
 	char *key = space_serialize_key (space, "");
@@ -841,7 +836,7 @@ static RSignBytes *r_sign_func_empty_mask(RAnal *a, RAnalFunction *fcn) {
 		sig->bytes = malloc (size);
 		sig->mask = R_NEWS0 (ut8, size);
 		sig->size = size;
-		if (sig->bytes && sig->mask && a->iob.read_at (a->iob.io, ea, sig->bytes, size)) {
+		if (sig->bytes && sig->mask && a->iob.read_at (a->iob.io, ea, sig->bytes, size) == size) {
 			return sig;
 		}
 	}
@@ -1239,7 +1234,7 @@ struct ctxDeleteCB {
 static bool deleteBySpaceCB(void *user, const char *k, const char *v) {
 	struct ctxDeleteCB *ctx = (struct ctxDeleteCB *) user;
 	if (!strncmp (k, ctx->key, ctx->len)) {
-		sdb_remove (ctx->anal->sdb_zigns, k, 0);
+		sdb_unset (ctx->anal->sdb_zigns, k, 0);
 	}
 	return true;
 }
@@ -1265,7 +1260,7 @@ R_API bool r_sign_delete(RAnal *a, const char *name) {
 		// Remove specific zign
 		char *key = space_serialize_key (r_spaces_current (&a->zign_spaces), name);
 		if (key) {
-			retval = sdb_remove (a->sdb_zigns, key, 0);
+			retval = sdb_unset (a->sdb_zigns, key, 0);
 			free (key);
 		}
 	}
@@ -2082,7 +2077,7 @@ R_API char *r_sign_calc_bbhash(RAnal *a, RAnalFunction *fcn) {
 		if (!buf) {
 			return NULL;
 		}
-		if (!a->iob.read_at (a->iob.io, bbi->addr, buf, bbi->size)) {
+		if (a->iob.read_at (a->iob.io, bbi->addr, buf, bbi->size) != bbi->size) {
 			free (buf);
 			return NULL;
 		}
@@ -2100,51 +2095,15 @@ static bool countForCB(RSignItem *it, void *user) {
 	return true;
 }
 
-static bool unsetForCB(RSignItem *it, void *user) {
-	Sdb *db = (Sdb *)user;
-	char *key = item_serialize_key (it);
-	if (key) {
-		sdb_remove (db, key, 0);
-		free (key);
-	}
-	it->space = NULL;
-	r_sign_set_item (db, it, NULL);
-	return true;
-}
-
-struct ctxRenameForCB {
-	RAnal *anal;
-	char *oprefix; // old prefix
-	const char *newname;
-	size_t oldlen;
-};
-
-static bool renameForCB(void *user, const char *k, const char *v) {
-	struct ctxRenameForCB *ctx = (struct ctxRenameForCB *) user;
-	Sdb *db = ctx->anal->sdb_zigns;
-	if (!strncmp (k, ctx->oprefix, ctx->oldlen)) {
-		char *nk = str_serialize_key (ctx->newname, k + ctx->oldlen);
-		char *nv = strdup (v);
-		if (nk && nv) {
-			// must remove before set, must alloc new nk and nv before hand
-			sdb_remove (db, k, 0);
-			sdb_set (db, nk, nv, 0);
-		}
-		free (nv);
-		free (nk);
-	}
-	return true;
-}
-
 R_API void r_sign_space_rename_for(RAnal *a, const RSpace *space, const char *oname, const char *nname) {
 	R_RETURN_IF_FAIL (a && space && oname && nname);
-	struct ctxRenameForCB ctx = { .anal = a, .newname = nname };
-	ctx.oprefix = str_serialize_key (oname, "");
-	if (ctx.oprefix) {
-		ctx.oldlen = strlen (ctx.oprefix);
-		sdb_foreach (a->sdb_zigns, renameForCB, &ctx);
+	char *oprefix = str_serialize_key (oname, "");
+	char *nprefix = str_serialize_key (nname, "");
+	if (oprefix && nprefix) {
+		sdb_rename_prefix (a->sdb_zigns, oprefix, nprefix);
 	}
-	free (ctx.oprefix);
+	free (nprefix);
+	free (oprefix);
 }
 
 struct ctxForeachCB {
@@ -2191,7 +2150,13 @@ R_API int r_sign_space_count_for(RAnal *a, const RSpace *space) {
 }
 
 R_API void r_sign_space_unset_for(RAnal *a, const RSpace *space) {
-	local_foreach_item (a, unsetForCB, space, true, a->sdb_zigns);
+	char *oprefix = space_serialize_key (space, "");
+	char *nprefix = space_serialize_key (NULL, "");
+	if (oprefix && nprefix) {
+		sdb_rename_prefix (a->sdb_zigns, oprefix, nprefix);
+	}
+	free (nprefix);
+	free (oprefix);
 }
 
 R_API bool r_sign_foreach(RAnal *a, RSignForeachCallback cb, void *user) {

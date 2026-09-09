@@ -149,11 +149,11 @@ static bool anal_esil_mem_read(void *mem, ut64 addr, ut8 *buf, int len) {
 	if (!r_itv_contain (region.itv, addr + len - 1)) {
 		const int _len = r_itv_end (region.itv) - addr;
 		return anal_esil_mem_read (mem, r_itv_end (region.itv), &buf[_len], len - _len)
-			&& anal->iob.read_at (anal->iob.io, addr, buf, _len);
+			&& anal->iob.read_at (anal->iob.io, addr, buf, _len) == _len;
 	}
 	// do not set esil->trap or esil->trap_code here. esil handles that on it's own
 	// do not invoke esil->cmd_ioer, this is about to get removed from esil. core_esil is supposed to handle this
-	return anal->iob.read_at (anal->iob.io, addr, buf, len);
+	return anal->iob.read_at (anal->iob.io, addr, buf, len) == len;
 }
 
 static bool anal_esil_mem_write(void *mem, ut64 addr, const ut8 *buf, int len) {
@@ -167,7 +167,7 @@ static bool anal_esil_mem_write(void *mem, ut64 addr, const ut8 *buf, int len) {
 		return false;
 	}
 	if (!((region.perm & R_PERM_W)
-		|| ((region.perm & R_PERM_REQ_W) && r_io_cache_writable (anal->iob.io)))) {
+		|| ((region.sperm & R_PERM_W) && r_io_cache_writable (anal->iob.io)))) {
 		return false;
 	}
 	if (!r_itv_contain (region.itv, addr + len - 1)) {
@@ -206,6 +206,7 @@ R_API RAnal *r_anal_new(void) {
 	anal->config = r_arch_config_new ();
 	anal->arch = r_arch_new ();
 	anal->esil_goto_limit = R_ESIL_GOTO_LIMIT;
+	anal->opt.stateful = true;
 	anal->opt.nopskip = true; // skip nops in code analysis
 	anal->opt.hpskip = false; // skip `mov reg,reg` and `lea reg,[reg]`
 	anal->opt.vars_maxbbsize = 16 * 1024;
@@ -237,17 +238,19 @@ R_API RAnal *r_anal_new(void) {
 	anal->zign_path = strdup ("");
 	anal->cb_printf = (PrintfCallback) printf;
 	anal->reg = r_reg_new ();
-	anal->esil = r_esil_new_simple (1, anal->reg, &anal->iob);
-	anal->esil->mem_if = (REsilMemInterface) {
+	REsilOptions esil_opt = r_esil_options (anal->reg, NULL);
+	esil_opt.addrsize = 1;
+	esil_opt.ifaces.mem = (REsilMemInterface) {
 		.mem = anal,
 		.mem_switch = anal_esil_mem_switch,
 		.mem_read = anal_esil_mem_read,
 		.mem_write = anal_esil_mem_write,
 	};
-	anal->esil->util_if = (REsilUtilInterface) {
+	esil_opt.ifaces.util = (REsilUtilInterface) {
 		.user = anal,
 		.set_bits = anal_esil_set_bits,
 	};
+	anal->esil = r_esil_new (&esil_opt);
 	anal->esil->anal = anal;
 	(void)r_anal_pin_init (anal);
 	(void)r_anal_xrefs_init (anal);
@@ -298,10 +301,10 @@ R_API void r_anal_free(RAnal *a) {
 		r_bitset_free (a->visited);
 	}
 	r_anal_hint_storage_fini (a);
+	r_anal_xrefs_free (a);
 	r_th_lock_free (a->lock);
 	r_interval_tree_fini (&a->meta);
 	r_unref (a->config);
-	a->arch->esil = NULL;
 	r_arch_free (a->arch);
 	a->arch = NULL;
 	free (a->zign_path);
@@ -313,7 +316,6 @@ R_API void r_anal_free(RAnal *a) {
 	r_anal_pin_fini (a);
 	r_syscall_free (a->syscall);
 	r_unref (a->reg);
-	r_anal_xrefs_free (a);
 	r_list_free (a->threads);
 	r_list_free (a->leaddrs);
 	sdb_free (a->sdb);
@@ -334,7 +336,7 @@ R_API void r_anal_set_user_ptr(RAnal *anal, void *user) {
 R_API bool r_anal_plugin_add(RAnal *anal, RAnalPlugin *foo) {
 	R_RETURN_VAL_IF_FAIL (anal && foo, false);
 	if (foo->init) {
-		foo->init (anal->user);
+		foo->init (anal);
 	}
 	r_list_append (anal->libstore->plugins, foo);
 	return true;
@@ -389,6 +391,9 @@ R_DEPRECATE R_API bool r_anal_set_reg_profile(RAnal *anal, const char *p) {
 		p = (const char *)rp;
 	}
 	if (R_STR_ISNOTEMPTY (p)) {
+		if (anal->config) {
+			anal->reg->endian = anal->config->endian;
+		}
 		ret = r_reg_set_profile_string (anal->reg, p);
 	}
 	free (rp);
@@ -419,10 +424,16 @@ R_API bool r_anal_set_triplet(RAnal *anal, const char * R_NULLABLE os, const cha
 R_API bool r_anal_set_os(RAnal *anal, const char *os) {
 	R_RETURN_VAL_IF_FAIL (anal && os, false);
 	const char *old_os = anal->config? anal->config->os: NULL;
-	if (!old_os || strcmp (old_os, os)) {
+	const bool changed = !old_os || strcmp (old_os, os);
+	if (changed) {
 		R_ANAL_PRIV (anal)->types_dirty = true;
 	}
-	return r_anal_set_triplet (anal, os, NULL, -1);
+	const bool res = r_anal_set_triplet (anal, os, NULL, -1);
+	if (res && changed) {
+		// os-dependent register aliases (e.g. arm64 =SN) must follow
+		r_anal_set_reg_profile (anal, NULL);
+	}
+	return res;
 }
 
 R_API bool r_anal_set_bits(RAnal *anal, int bits) {
@@ -463,7 +474,7 @@ R_API ut8 *r_anal_mask(RAnal *anal, int size, const ut8 *data, ut64 at) {
 		}
 		idx += oplen;
 		at += oplen;
-		R_FREE (op->mnemonic);
+		r_anal_op_fini (op);
 	}
 
 	r_anal_op_free (op);
@@ -523,6 +534,7 @@ R_API void r_anal_purge(RAnal *anal) {
 	sdb_reset (anal->sdb_cc);
 	r_list_free (anal->fcns);
 	anal->fcns = r_list_newf ((RListFree)r_anal_function_free);
+	(void)r_anal_xrefs_init (anal);
 	r_anal_purge_imports (anal);
 }
 
@@ -707,7 +719,7 @@ static bool noreturn_recurse(RAnal *anal, ut64 addr) {
 	if (!addr || addr == UT64_MAX) {
 		return false;
 	}
-	if (!anal->iob.read_at (anal->iob.io, addr, bbuf, sizeof (bbuf))) {
+	if (anal->iob.read_at (anal->iob.io, addr, bbuf, sizeof (bbuf)) != sizeof (bbuf)) {
 		R_LOG_ERROR ("Couldn't read buffer");
 		return false;
 	}
@@ -829,7 +841,11 @@ R_API bool r_anal_is_prelude(RAnal *anal, ut64 addr, const ut8 *data, int len) {
 			return false;
 		}
 		data = owned;
-		(void)anal->iob.read_at (anal->iob.io, addr, (ut8 *) owned, maxis);
+		len = anal->iob.read_at (anal->iob.io, addr, (ut8 *)owned, maxis);
+		if (len < 1) {
+			free (owned);
+			return false;
+		}
 	}
 	RList *l = r_anal_preludes (anal);
 	if (l) {

@@ -171,7 +171,7 @@ static int load_reloc_table(RelReloc *out, RBuffer *buf, ut64 addr) {
 
 static bool vread_at_be32(RBin *b, ut32 vaddr, ut32 *out) {
 	ut8 buf[4] = { 0 };
-	if (!b->iob.read_at (b->iob.io, vaddr, (void *)&buf, sizeof (buf))) {
+	if (b->iob.read_at (b->iob.io, vaddr, (void *)&buf, sizeof (buf)) != sizeof (buf)) {
 		return false;
 	}
 	*out = r_read_be32 (&buf);
@@ -332,12 +332,12 @@ static ut64 baddr(RBinFile *bf) {
 	return bf->bo->baddr;
 }
 
-static RList *sections(RBinFile *bf) {
+static bool sections_vec(RBinFile *bf) {
 	int i;
 	const RelSection *rel_s;
 	RBinSection *s;
 	const LoadedRel *rel = bf->bo->bin_obj;
-	RList *ret = r_list_new ();
+	RVecRBinSection_clear (&bf->bo->sections_vec);
 
 	bool has_bss = false;
 	for (i = 0; i < rel->hdr.num_sections; i++) {
@@ -346,20 +346,17 @@ static RList *sections(RBinFile *bf) {
 			continue;
 		}
 		bool executable = rel_section_is_executable (&rel->sections[i]);
-		s = R_NEW0 (RBinSection);
-		if (!s) {
-			break;
+		ut64 paddr = rel_section_paddr (rel_s);
+		if (paddr == 0 && has_bss) {
+			R_LOG_ERROR ("Ignoring duplicate bss section (%d)", i);
+			continue;
 		}
-		s->paddr = rel_section_paddr (rel_s);
+		s = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
+		s->paddr = paddr;
 		s->vaddr = bf->bo->baddr + s->paddr;
 		s->size = s->vsize = rel_s->size;
 		s->add = true;
 		if (s->paddr == 0) {
-			if (has_bss) {
-				R_LOG_ERROR ("Ignoring duplicate bss section (%d)", i);
-				free (s);
-				continue;
-			}
 			has_bss = true;
 			s->name = strdup ("bss");
 			// Place after end of REL file
@@ -376,10 +373,9 @@ static RList *sections(RBinFile *bf) {
 			s->perm = r_str_rwx ("rw-");
 		}
 		rel->section_vaddrs[i] = s->vaddr;
-		r_list_append (ret, s);
 	}
 
-	return ret;
+	return true;
 }
 
 static void register_header_symbol(RBinFile *bf, RVecRBinSymbol *syms, const char *name, ut8 section, ut32 offset) {
@@ -449,8 +445,9 @@ static bool _overlay_write_at_hack(RIO *io, ut64 addr, const ut8 *buf, int len) 
 
 // Applies a relocation on the current program.
 // Does not generate RBinReloc/RBinImport entries.
-static RBinReloc *patch_reloc(RBin *b, const LoadedRel *rel, const RelReloc *reloc, ut32 module, ut32 P) {
-	ut32 value_old, value; // (*P)
+// patches the reloc and appends it to `out`, returns false if unsupported
+static bool patch_reloc(RBin *b, const LoadedRel *rel, const RelReloc *reloc, ut32 module, ut32 P, RVecRBinReloc *out) {
+	ut32 value_old, value = 0; // (*P)
 	ut32 S; // Section vaddr of symbol
 	ut32 A = reloc->addend; // sym vaddr = S + A
 
@@ -462,15 +459,15 @@ static RBinReloc *patch_reloc(RBin *b, const LoadedRel *rel, const RelReloc *rel
 		S = get_section_vaddr (rel, reloc->section);
 		if (!S) {
 			R_LOG_ERROR ("Invalid reloc against section %d with unknown virtual addr", reloc->section);
-			return NULL;
+			return false;
 		}
 	}
 
 	// Load original slot
 	// if (r_buf_fread_at (buf, paddr, (void *)&V, "I", 1) == -1) {
-	if (!vread_at_be32 (b, P, &value)) {
+	if (b->iob.overlay_write_at != _overlay_write_at_hack && !vread_at_be32 (b, P, &value)) {
 		R_LOG_ERROR ("REL: Cannot read reloc target at %#08x", P);
-		return NULL;
+		return false;
 	}
 	value_old = value;
 	int size = 0;
@@ -479,7 +476,7 @@ static RBinReloc *patch_reloc(RBin *b, const LoadedRel *rel, const RelReloc *rel
 	switch (reloc->type) {
 	case R_RVL_NONE:
 	case R_RVL_SECT:
-		return NULL;
+		return false;
 	case R_PPC_ADDR32:     size = 4; value = S + A;                              break;
 	case R_PPC_ADDR24:     size = 4; value = set_low24 (value, (S + A) >> 2);     break;
 	case R_PPC_REL24:      size = 4; value = set_low24 (value, (S + A - P) >> 2); break;
@@ -490,7 +487,7 @@ static RBinReloc *patch_reloc(RBin *b, const LoadedRel *rel, const RelReloc *rel
 		if (b->iob.overlay_write_at != _overlay_write_at_hack) {
 			R_LOG_ERROR ("REL: Unsupported reloc type %d", reloc->type);
 		}
-		return NULL;
+		return false;
 	}
 	// clang-format on
 
@@ -510,20 +507,12 @@ static RBinReloc *patch_reloc(RBin *b, const LoadedRel *rel, const RelReloc *rel
 	// if (r_buf_fwrite_at (buf, paddr, (void *)&V, "I", 1) == -1) {
 	if (!vwriten_at_be32 (b, P, value, size)) {
 		R_LOG_ERROR ("REL: Cannot write reloc target at %#08x", P);
-		return NULL;
+		return false;
 	}
 
-	RBinReloc *ret = R_NEW0 (RBinReloc);
-	switch (size) {
-	// UNREACHABLE case 1: ret->type = R_BIN_RELOC_8; break;
-	case 2: ret->type = R_BIN_RELOC_16; break;
-	// UNREACHABLE case 3: ret->type = R_BIN_RELOC_24; break;
-	case 4: ret->type = R_BIN_RELOC_32; break;
-	default:
-		R_LOG_DEBUG ("Cannot convert reloc of size %d to RBinReloc", size);
-		free (ret);
-		return NULL;
-	}
+	RBinReloc *ret = RVecRBinReloc_emplace_back (out);
+	// sizes 1 and 3 are unreachable, see the switch above
+	ret->type = (size == 2)? R_BIN_RELOC_16: R_BIN_RELOC_32;
 	ret->ntype = reloc->type;
 	ret->addend = A;
 	ret->vaddr = P;
@@ -531,15 +520,15 @@ static RBinReloc *patch_reloc(RBin *b, const LoadedRel *rel, const RelReloc *rel
 	if (s && s->paddr != 0) {
 		ret->paddr = P - b->cur->bo->baddr;
 	}
-	return ret;
+	return true;
 }
 
-static RList *patch_relocs(RBinFile *bf) {
+static RVecRBinReloc *patch_relocs(RBinFile *bf) {
 	int i, j;
 	RBin *b = bf->rbin;
 	const LoadedRel *rel = b->cur->bo->bin_obj;
 
-	RList *ret = r_list_new ();
+	RVecRBinReloc *ret = RVecRBinReloc_new ();
 	for (i = 0; i < rel->num_imps; i++) {
 		const RelImp *imp = &rel->imps[i];
 		if (imp->module != 0 && imp->module != rel->hdr.module_id) {
@@ -557,23 +546,20 @@ static RList *patch_relocs(RBinFile *bf) {
 			if (!reloc_step_vaddr (rel, reloc, &P)) {
 				break;
 			}
-			RBinReloc *r_reloc = patch_reloc (b, rel, reloc, imp->module, P);
-			if (ret && r_reloc) {
-				r_list_append (ret, r_reloc);
-			}
+			patch_reloc (b, rel, reloc, imp->module, P, ret);
 		}
 	}
 	return ret;
 }
 
-static RList *relocs(RBinFile *bf) {
+static RVecRBinReloc *relocs(RBinFile *bf) {
 	if (!bf || !bf->rbin) {
 		return NULL;
 	}
 	RBin *b = bf->rbin;
 	void *tmp = b->iob.overlay_write_at;
 	b->iob.overlay_write_at = _overlay_write_at_hack;
-	RList *ret = patch_relocs (bf);
+	RVecRBinReloc *ret = patch_relocs (bf);
 	b->iob.overlay_write_at = tmp;
 	return ret;
 }
@@ -604,7 +590,7 @@ RBinPlugin r_bin_plugin_rel = {
 	.load = &load,
 	.destroy = &destroy,
 	.baddr = &baddr,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.symbols_vec = &symbols_vec,
 	.relocs = &relocs,
 	.info = &info,

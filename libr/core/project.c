@@ -12,9 +12,12 @@
 // TODO: Use .zrp as in zipped radare project
 
 static bool is_valid_project_name(const char *name) {
-	if (r_str_len_utf8 (name) >= 64) {
+	char *filtered = strdup (name);
+	if (!filtered || r_str_filter_file (filtered) || r_str_len_utf8 (name) >= 64) {
+		free (filtered);
 		return false;
 	}
+	free (filtered);
 	const char *const extension = r_str_endswith (name, ".zip")? r_str_last (name, ".zip"): NULL;
 	for (; *name && name != extension; name++) {
 		if (isdigit (*name) || islower (*name) || *name == '_') {
@@ -182,84 +185,6 @@ R_API int r_core_project_delete(RCore *core, const char *prjfile) {
 	return 0;
 }
 
-static bool load_project_rop(RCore *core, const char *prjfile) {
-	if (!core || R_STR_ISEMPTY (prjfile)) {
-		return false;
-	}
-	char *path, *db = NULL;
-	bool found = false;
-	SdbListIter *it;
-	SdbNs *ns;
-
-	Sdb *rop_db = sdb_ns (core->sdb, "rop", false);
-	char *rc_path = get_project_script_path (core, prjfile);
-	char *prj_dir = r_file_dirname (rc_path);
-	free (rc_path);
-	if (r_str_endswith (prjfile, R_SYS_DIR "rc.r2")) {
-		path = strdup (prjfile);
-		path[strlen (path) - 3] = 0;
-	} else if (r_file_fexists ("%s%s%src.r2", R_SYS_DIR, prj_dir, prjfile)) {
-		path = r_str_newf ("%s%s%s", R_SYS_DIR, prj_dir, prjfile);
-	} else {
-		if (*prjfile == R_SYS_DIR[0]) {
-			db = r_str_newf ("%s.d", prjfile);
-			if (!db) {
-				free (prj_dir);
-				return false;
-			}
-			path = strdup (db);
-		} else {
-			db = r_str_newf ("%s" R_SYS_DIR "%s.d", prj_dir, prjfile);
-			if (!db) {
-				free (prj_dir);
-				return false;
-			}
-			path = r_file_abspath (db);
-		}
-	}
-	if (!path) {
-		free (db);
-		free (prj_dir);
-		return false;
-	}
-	if (rop_db) {
-		ls_foreach (core->sdb->ns, it, ns) {
-			if (ns->sdb == rop_db) {
-				ls_delete (core->sdb->ns, it);
-				found = true;
-				break;
-			}
-		}
-	}
-	if (!found) {
-		sdb_free (rop_db);
-	}
-	rop_db = sdb_new (path, "rop", 0);
-	if (!rop_db) {
-		free (db);
-		free (path);
-		free (prj_dir);
-		return false;
-	}
-	sdb_ns_set (core->sdb, "rop", rop_db);
-
-	char *path_ns = r_str_newf ("%s" R_SYS_DIR "rop", prj_dir);
-	if (!r_file_exists (path_ns)) {
-		path_ns = r_str_append (path_ns, ".sdb");
-	}
-	sdb_ns_set (rop_db, "nop", sdb_new (path_ns, "nop", 0));
-	sdb_ns_set (rop_db, "mov", sdb_new (path_ns, "mov", 0));
-	sdb_ns_set (rop_db, "const", sdb_new (path_ns, "const", 0));
-	sdb_ns_set (rop_db, "arithm", sdb_new (path_ns, "arithm", 0));
-	sdb_ns_set (rop_db, "arithm_ct", sdb_new (path_ns, "arithm_ct", 0));
-
-	free (path);
-	free (path_ns);
-	free (db);
-	free (prj_dir);
-	return true;
-}
-
 R_API void r_core_project_execute_cmds(RCore *core, const char *prjfile) {
 	char *str = r_core_project_notes_file (core, prjfile);
 	char *data = r_file_slurp (str, NULL);
@@ -319,8 +244,6 @@ static bool r_core_project_load(RCore *core, const char *prj_name, const char *r
 	const bool cfg_fortunes = r_config_get_b (core->config, "cfg.fortunes");
 	const bool scr_interactive = r_cons_is_interactive (core->cons);
 	const bool scr_prompt = r_config_get_b (core->config, "scr.prompt");
-	(void) load_project_rop (core, prj_name);
-
 	if (r_config_get_b (core->config, "prj.new")) {
 		char *prj_dir = r_file_dirname (rcpath);
 		char *prj_bin = prj_dir? r_file_new (prj_dir, "prj.bin", NULL): NULL;
@@ -553,7 +476,7 @@ R_API char *r_core_project_name(RCore *core, const char *prjfile) {
 }
 
 static void flush(RCore *core, RStrBuf *sb) {
-	char *s = r_cons_drain (core->cons);
+	char *s = r_cons_drain (core->cons, NULL);
 	if (s) {
 		r_strbuf_append (sb, s);
 		free (s);
@@ -708,8 +631,6 @@ R_API bool r_core_project_save(RCore *core, const char *prj_name) {
 	R_RETURN_VAL_IF_FAIL (R_STR_ISNOTEMPTY (prj_name), false);
 	bool scr_null = false;
 	bool ret = true;
-	SdbListIter *it;
-	SdbNs *ns;
 
 	if (r_config_get_b (core->config, "cfg.debug")) {
 		R_LOG_ERROR ("radare2 does not support projects on debugged bins");
@@ -746,17 +667,6 @@ R_API bool r_core_project_save(RCore *core, const char *prj_name) {
 	}
 	make_projects_directory (core);
 
-	Sdb *rop_db = sdb_ns (core->sdb, "rop", false);
-	if (rop_db) {
-		/* set filepath for all the rop sub-dbs */
-		ls_foreach (rop_db->ns, it, ns) {
-			char *rop_path = r_str_newf ("%s" R_SYS_DIR "rop.d" R_SYS_DIR "%s", prj_dir, ns->name);
-			sdb_file (ns->sdb, rop_path);
-			sdb_sync (ns->sdb);
-			free (rop_path);
-		}
-	}
-
 	r_config_set (core->config, "prj.name", prj_name);
 	if (!r_core_project_save_script (core, script_path, R_CORE_PRJ_ALL)) {
 		R_LOG_ERROR ("Cannot open '%s' project name", prj_name);
@@ -767,8 +677,8 @@ R_API bool r_core_project_save(RCore *core, const char *prj_name) {
 		r_file_rm (prj_file);
 		r_core_cmdf (core, "prj save %s", prj_file);
 		if (!r_file_exists (prj_file)) {
-			R_LOG_ERROR ("Cannot create binary project '%s'", prj_file);
-			ret = false;
+			// the binary project is an optional artifact, the rc.r2 script is already saved
+			R_LOG_WARN ("Cannot create binary project '%s', the project script was saved", prj_file);
 		}
 		free (prj_file);
 	}
@@ -790,32 +700,28 @@ R_API bool r_core_project_save(RCore *core, const char *prj_name) {
 		free (bin_file);
 	}
 	if (core->prj->rvc || r_config_get_b (core->config, "prj.vc")) {
+		// version control is a secondary step, a failure here must not
+		// discard the project script that was already saved on disk
 		// assume that if the repo is not loaded, the repo doesn't exist
 		if (!core->prj->rvc) {
 			core->prj->rvc = rvc_open (prj_dir, RVC_TYPE_GIT);
-			if (!core->prj->rvc) {
-				R_LOG_WARN ("Cannot initialize git repositorty");
-				free (prj_dir);
-				free (script_path);
-				return false;
+		}
+		if (!core->prj->rvc) {
+			R_LOG_WARN ("Cannot initialize the version control repository, project saved without versioning");
+		} else {
+			RList *paths = r_list_new ();
+			if (paths && r_list_append (paths, prj_dir)) {
+				const char *author = r_config_get (core->config, "cfg.user");
+				const char *message = r_config_get (core->config, "prj.vc.message");
+				if (rvc_commit (core->prj->rvc, message, author, paths)) {
+					rvc_save (core->prj->rvc);
+				} else {
+					// commit fails when there's nothing new to commit, which is not a save error
+					R_LOG_WARN ("Nothing to commit or version control commit failed, project saved anyway");
+				}
 			}
-		}
-		RList *paths = r_list_new ();
-		if (!paths || !r_list_append (paths, prj_dir)) {
 			r_list_free (paths);
-			free (prj_dir);
-			free (script_path);
-			return false;
 		}
-		const char *author = r_config_get (core->config, "cfg.user");
-		const char *message = r_config_get (core->config, "prj.vc.message");
-		if (!rvc_commit (core->prj->rvc, message, author, paths)) {
-			r_list_free (paths);
-			free (prj_dir);
-			free (script_path);
-			return false;
-		}
-		rvc_save (core->prj->rvc);
 	}
 	if (r_config_get_b (core->config, "prj.history")) {
 		char *history = r_core_cmd_str (core, "!!");
@@ -846,9 +752,11 @@ R_API char *r_core_project_notes_file(RCore *core, const char *prj_name) {
 	char *prjpath = r_file_abspath (prjdir);
 	char *notes_txt = r_file_new (prjpath, prj_name, "notes.txt", NULL);
 	char *link = notes_txt? r_file_readlink (notes_txt): NULL;
-	if (link && strcmp (link, notes_txt)) {
+	char *ndir = notes_txt? r_file_dirname (notes_txt): NULL;
+	if ((link && strcmp (link, notes_txt)) || !ndir || !project_path_is_within_projects_dir (core, ndir)) {
 		R_FREE (notes_txt);
 	}
+	free (ndir);
 	free (link);
 	free (prjpath);
 	return notes_txt;

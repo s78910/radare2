@@ -14,38 +14,28 @@ static int base64_get_key_size(RMutaSession *ms) {
 }
 
 static bool update(RMutaSession *ms, const ut8 *buf, int len) {
+	if (len < 1) {
+		return len == 0;
+	}
 	int olen = 0;
 	ut8 *obuf = NULL;
 	switch (ms->dir) {
 	case R_MUTA_OP_ENCRYPT:
-		olen = ((len + 2) / 3) * 4;
-		obuf = malloc (olen + 1);
-		if (!obuf) {
-			return false;
-		}
-		r_base64_encode ((char *)obuf, (const ut8 *)buf, len);
+		obuf = (ut8 *)r_base64_encode_dyn (buf, len);
+		olen = obuf? (int)strlen ((const char *)obuf): 0;
 		break;
 	case R_MUTA_OP_DECRYPT:
-		olen = 4 + ((len / 4) * 3);
-		if (len > 0) {
-			olen -= (buf[len - 1] == '=')? ((buf[len - 2] == '=')? 2: 1): 0;
-		}
-		obuf = malloc (olen + 4);
-		if (!obuf) {
-			return false;
-		}
-		olen = r_base64_decode (obuf, (const char *)buf, len, false);
+		obuf = r_base64_decode_dyn ((const char *)buf, len, &olen, false);
 		break;
+	}
+	if (!obuf) {
+		return false;
 	}
 	if (olen > 0) {
 		r_muta_session_append (ms, obuf, olen);
 	}
 	free (obuf);
 	return true;
-}
-
-static bool end(RMutaSession *ms, const ut8 *buf, int len) {
-	return update (ms, buf, len);
 }
 
 RMutaPlugin r_muta_plugin_base64 = {
@@ -59,7 +49,7 @@ RMutaPlugin r_muta_plugin_base64 = {
 	.set_key = base64_set_key,
 	.get_key_size = base64_get_key_size,
 	.update = update,
-	.end = end
+	.end = update
 };
 
 #ifndef R2_PLUGIN_INCORE

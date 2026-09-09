@@ -49,6 +49,7 @@ typedef struct r_bin_mdmp_obj {
 	/* Binary memory objects */
 	RList *pe32_bins;
 	RList *pe64_bins;
+	RVecRBinReloc relocs; // import relocs of all the embedded pe bins
 
 	RBuffer *b;
 	size_t size;
@@ -57,7 +58,7 @@ typedef struct r_bin_mdmp_obj {
 } RBinMdmpObj;
 
 
-RBinMdmpObj *r_bin_mdmp_new_buf(RBuffer *buf);
+RBinMdmpObj *r_bin_mdmp_new_buf(RBuffer *buf, const char *sdbdir);
 void r_bin_mdmp_free(RBinMdmpObj *obj);
 ut64 r_bin_mdmp_get_paddr(RBinMdmpObj *obj, ut64 vaddr);
 ut32 r_bin_mdmp_get_perm(RBinMdmpObj *obj, ut64 vaddr);

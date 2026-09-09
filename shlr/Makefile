@@ -121,6 +121,12 @@ ifeq ($(EXT_EXE),.wasm)
 	$(MAKE) -C $(SDB_ROOT)/src ARCH=xxx EXT_AR=.$(EXT_AR) RANLIB="${RANLIB}" CPPFLAGS=-I$(SDB_ROOT)/include \
 		CFLAGS_SHARED="${CFLAGS_SHARED} -DHAVE_MMAN=0" \
 		CC="${CC}" AR="${AR}" ARCH=undefined CFLAGS='${CFLAGS} -DHAVE_MMAN=0' LDFLAGS='${LDFLAGS}' libsdb.$(EXT_AR)
+else ifneq (,$(findstring R2_UEFI,$(CFLAGS)))
+# the uefi port cross compiles against its own libc, so sdb must not pick
+# the host toolchain defaults and cannot mmap the disk files
+	$(MAKE) -C $(SDB_ROOT)/src ARCH=xxx EXT_AR=.$(EXT_AR) RANLIB="${RANLIB}" CPPFLAGS="-I$(SDB_ROOT)/include -DHAVE_SYSTEM=0" \
+		CFLAGS_SHARED="${CFLAGS_SHARED}" \
+		CC="${CC}" AR="${AR}" ARCH=undefined CFLAGS='${CFLAGS} -DUSE_MMAN=0' LDFLAGS='${LDFLAGS}' libsdb.$(EXT_AR)
 else
 	$(MAKE) -C $(SDB_ROOT)/src ARCH=xxx EXT_AR=.$(EXT_AR) RANLIB="${RANLIB}" CPPFLAGS="-I$(SDB_ROOT)/include -DHAVE_SYSTEM=0" \
 		CFLAGS_SHARED="${CFLAGS_SHARED}" \
@@ -278,7 +284,10 @@ spp: spp-sync
 
 SHLRS+=ar/libr_ar.a
 SHLRS+=bochs/lib/libbochs.a
+# a stale libcapstone.a from a previous build must not be merged in
+ifneq ($(WANT_CAPSTONE),0)
 SHLRS+=$(CS_ROOT)/libcapstone.a
+endif
 SHLRS+=$(ZYDIS_SHLR_LIB)
 SHLRS+=gdb/lib/libgdbr.a
 SHLRS+=java/libr_java.a

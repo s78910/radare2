@@ -87,6 +87,7 @@ R_API RAnalFunction *r_anal_function_new(RAnal *anal) {
 	fcn->bp_frame = true;
 	fcn->is_noreturn = false;
 	fcn->meta._min = UT64_MAX;
+	fcn->meta.stack_pop = R_ANAL_CC_STACK_POP_UNKNOWN;
 	fcn->meta.numrefs = -1;
 	fcn->meta.numcallrefs = -1;
 	RVecAnalVarPtr_init (&fcn->vars);
@@ -578,7 +579,8 @@ static RAnalFcnSlot *fcn_context_collect_slot(RAnal *anal, const RAnalFcnContext
 static RAnalFunctionSignature *fcn_context_collect_signature(RAnalFunction *fcn) {
 	R_RETURN_VAL_IF_FAIL (fcn, NULL);
 	RAnalFunctionSignature *signature = r_anal_function_get_signature (fcn);
-	if (signature || (!R_STR_ISNOTEMPTY (fcn->callconv) && !fcn->is_noreturn)) {
+	const char *fcncc = r_anal_function_cc (fcn);
+	if (signature || (!R_STR_ISNOTEMPTY (fcncc) && !fcn->is_noreturn)) {
 		return signature;
 	}
 	signature = R_NEW0 (RAnalFunctionSignature);
@@ -587,8 +589,8 @@ static RAnalFunctionSignature *fcn_context_collect_signature(RAnalFunction *fcn)
 		r_anal_function_signature_free (signature);
 		return NULL;
 	}
-	if (R_STR_ISNOTEMPTY (fcn->callconv)) {
-		signature->callconv = strdup (fcn->callconv);
+	if (R_STR_ISNOTEMPTY (fcncc)) {
+		signature->callconv = strdup (fcncc);
 		if (!signature->callconv) {
 			r_anal_function_signature_free (signature);
 			return NULL;
@@ -672,6 +674,22 @@ R_API RAnalFcnContext *r_anal_function_context_collect(RAnal *anal, RAnalFunctio
 	return ctx;
 }
 
+typedef struct {
+	RGraph *graph;
+	HtUP *nodes;
+	RGraphNode *from;
+} EdgeCtx;
+
+// a successor outside the function (tail jump, noreturn split) is not an edge
+static bool add_edge_cb(ut64 addr, void *user) {
+	EdgeCtx *ctx = user;
+	RGraphNode *to = ht_up_find (ctx->nodes, addr, NULL);
+	if (to) {
+		r_graph_add_edge (ctx->graph, ctx->from, to);
+	}
+	return true;
+}
+
 R_API RGraph *r_anal_function_get_graph(RAnalFunction *fcn, RGraphNode **node_ptr, ut64 addr) {
 	R_RETURN_VAL_IF_FAIL (fcn && fcn->bbs && r_list_length (fcn->bbs), NULL);
 	HtUP *nodes = ht_up_new0 ();
@@ -688,58 +706,13 @@ R_API RGraph *r_anal_function_get_graph(RAnalFunction *fcn, RGraphNode **node_pt
 		}
 		ht_up_insert (nodes, bb->addr, node);
 	}
+	EdgeCtx ctx = { g, nodes, NULL };
 	r_list_foreach (fcn->bbs, iter, bb) {
-		if (bb->jump == UT64_MAX  &&
-			(!bb->switch_op || !bb->switch_op->cases || !r_list_length (bb->switch_op->cases))) {
+		if (bb->jump == UT64_MAX && bb->fail == UT64_MAX && (!bb->switch_op || r_list_empty (bb->switch_op->cases))) {
 			continue;
 		}
-		RGraphNode *node = (RGraphNode *)ht_up_find (nodes, bb->addr, NULL);
-		if (bb->jump != UT64_MAX) {
-			RGraphNode *_node = NULL;
-			_node = (RGraphNode *)ht_up_find (nodes, bb->jump, NULL);
-			if (!_node) {
-				R_LOG_ERROR ("Broken fcn");
-				ht_up_free (nodes);
-				r_graph_free (g);
-				if (node_ptr) {
-					*node_ptr = NULL;
-				}
-				return NULL;
-			}
-			r_graph_add_edge (g, node, _node);
-		}
-		if (bb->fail != UT64_MAX) {
-			RGraphNode *_node = NULL;
-			_node = (RGraphNode *)ht_up_find (nodes, bb->fail, NULL);
-			if (!_node) {
-				R_LOG_ERROR ("Broken fcn");
-				ht_up_free (nodes);
-				r_graph_free (g);
-				if (node_ptr) {
-					*node_ptr = NULL;
-				}
-				return NULL;
-			}
-			r_graph_add_edge (g, node, _node);
-		}
-		if (bb->switch_op && bb->switch_op->cases && r_list_length (bb->switch_op->cases)) {
-			RListIter *ator;
-			RAnalCaseOp *co;
-			r_list_foreach (bb->switch_op->cases, ator, co) {
-				RGraphNode *_node = NULL;
-				_node = (RGraphNode *)ht_up_find (nodes, co->addr, NULL);
-				if (!_node) {
-					R_LOG_ERROR ("Broken fcn");
-					ht_up_free (nodes);
-					r_graph_free (g);
-					if (node_ptr) {
-						*node_ptr = NULL;
-					}
-					return NULL;
-				}
-				r_graph_add_edge (g, node, _node);
-			}
-		}
+		ctx.from = ht_up_find (nodes, bb->addr, NULL);
+		r_anal_block_successor_addrs_foreach (bb, add_edge_cb, &ctx);
 	}
 	ht_up_free (nodes);
 	return g;

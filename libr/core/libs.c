@@ -1,4 +1,4 @@
-/* radare2 - LGPL - Copyright 2009-2025 - pancake */
+/* radare2 - LGPL - Copyright 2009-2026 - pancake */
 
 #include <r_core.h>
 #include "config.h"
@@ -29,6 +29,20 @@ CB(bin, bin)
 CB(egg, egg)
 CB(fs, fs)
 CB(arch, anal->arch);
+
+static bool __lib_bin_demangle_cb(RLibPlugin *pl, void *user, void *data) {
+	RCore *core = user;
+	RPluginMeta *meta = data;
+	pl->free = NULL;
+	pl->name = strdup (meta->name);
+	return r_bin_demangle_plugin_add (core->bin, data);
+}
+
+static bool __lib_bin_demangle_dt(RLibPlugin *pl, void *user, void *data) {
+	RCore *core = user;
+	free (pl->name);
+	return r_bin_demangle_plugin_remove (core->bin, data);
+}
 
 static void core_load_internal_plugins(void *user) {
 	RCore *core = (RCore *)user;
@@ -65,9 +79,10 @@ static void load_plugins(RCore *core, int where, const char *path) {
 	r_lib_load_paths (core->lib, (RLibLoadMask)where, dir_plugins);
 }
 #else
-static void load_plugins(RCore *core, int where, const char *path){
-	(void)
+static void load_plugins(RCore *core, int where, const char *path) {
+#if !R2_UEFI
 #warning built without the ability to load plugins dynamically
+#endif
 }
 #endif
 
@@ -92,6 +107,7 @@ R_API void r_core_loadlibs_init(RCore *core) {
 	DF (ASM, "assembly plugins", asm);
 	// DF (PARSE, "parsing plugins", parse);
 	DF (BIN, "bin plugins", bin);
+	DF (BIN_DEMANGLE, "bin demangler plugins", bin_demangle);
 	DF (EGG, "egg plugins", egg);
 	DF (FS, "fs plugins", fs);
 	DF (ARCH, "arch plugins", arch);
@@ -135,7 +151,50 @@ static void load_scripts_at(RCore *core, const char *plugindir) {
 	r_list_free (files);
 }
 
+static void core_script_free(RCoreScript *es) {
+	if (es) {
+		free (es->name);
+		free (es->lang);
+		free (es->code);
+		free (es);
+	}
+}
+
+R_API void r_core_script_embed(RCore *core, const char *name, const char *lang, const char *code, int codelen) {
+	R_RETURN_IF_FAIL (core && name && lang && code);
+	if (codelen < 0) {
+		codelen = strlen (code);
+	}
+	if (!core->scripts) {
+		core->scripts = r_list_newf ((RListFree)core_script_free);
+	}
+	RCoreScript *es = R_NEW0 (RCoreScript);
+	es->name = strdup (name);
+	es->lang = strdup (lang);
+	es->code = r_str_ndup (code, codelen);
+	es->codelen = codelen;
+	r_list_append (core->scripts, es);
+}
+
+// run the scripts embedded by static plugins as if they were files in the plugins directory
+static void load_embedded_scripts(RCore *core) {
+	RListIter *iter;
+	RCoreScript *es;
+	r_list_foreach (core->scripts, iter, es) {
+		if (!strcmp (es->lang, "r2")) {
+			r_core_cmd_lines (core, es->code);
+		} else if (r_lang_use (core->lang, es->lang)) {
+			if (!r_lang_run (core->lang, es->code, es->codelen)) {
+				R_LOG_ERROR ("Failed to run the embedded '%s' script", es->name);
+			}
+		} else {
+			R_LOG_ERROR ("Cannot use the '%s' language to run the embedded '%s' script", es->lang, es->name);
+		}
+	}
+}
+
 static void load_scripts(RCore *core) {
+	load_embedded_scripts (core);
 	char *homeplugindir = r_xdg_datadir ("plugins");
 	load_scripts_at (core, homeplugindir);
 	free (homeplugindir);

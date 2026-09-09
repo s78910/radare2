@@ -10,8 +10,14 @@ extern REggEmit emit_x86;
 extern REggEmit emit_x64;
 extern REggEmit emit_arm;
 extern REggEmit emit_a64;
+extern REggEmit emit_ppc;
+extern REggEmit emit_ppc64;
 extern REggEmit emit_esil;
 extern REggEmit emit_trace;
+
+#if !defined(R_EGG_STATIC_PLUGINS)
+#define R_EGG_STATIC_PLUGINS 0
+#endif
 
 static REggPlugin *egg_static_plugins[] = { R_EGG_STATIC_PLUGINS };
 
@@ -30,9 +36,6 @@ void egg_patch_free(void *p) {
 
 R_API REgg *r_egg_new(void) {
 	REgg *egg = R_NEW0 (REgg);
-	if (!egg) {
-		return NULL;
-	}
 	egg->src = r_buf_new ();
 	if (!egg->src) {
 		goto beach;
@@ -98,6 +101,9 @@ R_API char *r_egg_tostring(REgg *egg) {
 
 R_API void r_egg_free(REgg *egg) {
 	if (egg) {
+		if (egg->remit && egg->remit->priv_free && egg->priv) {
+			egg->remit->priv_free (egg->priv);
+		}
 		r_unref (egg->src);
 		r_unref (egg->buf);
 		r_unref (egg->bin);
@@ -130,6 +136,10 @@ R_API void r_egg_reset(REgg *egg) {
 R_API bool r_egg_setup(REgg *egg, const char *arch, int bits, int endian, const char *os) {
 	R_RETURN_VAL_IF_FAIL (egg && arch, false);
 	const char *asmcpu = NULL; // TODO
+	if (egg->remit && egg->remit->priv_free && egg->priv) {
+		egg->remit->priv_free (egg->priv);
+	}
+	egg->priv = NULL;
 	egg->remit = NULL;
 
 	egg->os = os? r_str_hash (os): R_EGG_OS_DEFAULT;
@@ -170,11 +180,30 @@ R_API bool r_egg_setup(REgg *egg, const char *arch, int bits, int endian, const 
 			egg->endian = endian;
 			break;
 		}
+	} else if (!strcmp (arch, "ppc")) {
+		egg->arch = R_SYS_ARCH_PPC;
+		switch (bits) {
+		case 32:
+			r_syscall_setup (egg->syscall, arch, bits, asmcpu, os);
+			egg->remit = &emit_ppc;
+			egg->bits = bits;
+			egg->endian = endian;
+			break;
+		case 64:
+			r_syscall_setup (egg->syscall, arch, bits, asmcpu, os);
+			egg->remit = &emit_ppc64;
+			egg->bits = bits;
+			egg->endian = endian;
+			break;
+		}
 	} else if (!strcmp (arch, "trace")) {
 		// r_syscall_setup (egg->syscall, arch, os, bits);
 		egg->remit = &emit_trace;
 		egg->bits = bits;
 		egg->endian = endian;
+	}
+	if (egg->remit && egg->remit->priv_new) {
+		egg->priv = egg->remit->priv_new (egg);
 	}
 	return true;
 }
@@ -316,6 +345,11 @@ R_API void r_egg_printf(REgg *egg, const char *fmt, ...) {
 }
 
 R_API bool r_egg_assemble_asm(REgg *egg, char **asm_list) {
+	char *code = r_buf_tostring (egg->buf);
+	if (R_STR_ISEMPTY (code)) {
+		free (code);
+		return true;
+	}
 	char *asm_name = NULL;
 	if (asm_list) {
 		char **asm_ = asm_list;
@@ -331,6 +365,8 @@ R_API bool r_egg_assemble_asm(REgg *egg, char **asm_list) {
 			asm_name = "x86.nz";
 		} else if (egg->remit == &emit_a64 || egg->remit == &emit_arm) {
 			asm_name = "arm";
+		} else if (egg->remit == &emit_ppc || egg->remit == &emit_ppc64) {
+			asm_name = "ppc.nz";
 		}
 	}
 	bool ret = false;
@@ -343,27 +379,18 @@ R_API bool r_egg_assemble_asm(REgg *egg, char **asm_list) {
 		r_asm_set_big_endian (egg->rasm, egg->endian);
 		// r_asm_set_syntax (egg->rasm, R_ARCH_SYNTAX_INTEL);
 		r_arch_config_set_syntax (egg->rasm->config, R_ARCH_SYNTAX_INTEL);
-		char *code = r_buf_tostring (egg->buf);
-		if (R_STR_ISEMPTY (code)) {
-			free (code);
-			if (r_buf_size (egg->bin) == 0) {
-				R_LOG_DEBUG ("The egg compiler generated no code to assemble");
-			}
+		RAsmCode *asmcode = r_asm_assemble (egg->rasm, code);
+		if (asmcode && asmcode->len > 0) {
 			ret = true;
+			r_buf_append_bytes (egg->bin, asmcode->bytes, asmcode->len);
 		} else {
-			RAsmCode *asmcode = r_asm_assemble (egg->rasm, code);
-			if (asmcode && asmcode->len > 0) {
-				ret = true;
-				r_buf_append_bytes (egg->bin, asmcode->bytes, asmcode->len);
-			} else {
-				R_LOG_ERROR ("r_asm_assemble has failed %s", code);
-			}
-			r_asm_code_free (asmcode);
-			free (code);
+			R_LOG_ERROR ("r_asm_assemble has failed %s", code);
 		}
+		r_asm_code_free (asmcode);
 	} else {
 		R_LOG_ERROR ("Cannot find a valid assembler");
 	}
+	free (code);
 	return ret;
 }
 
@@ -443,10 +470,7 @@ R_API int r_egg_run_rop(REgg *egg) {
 #define R_EGG_FILL_TYPE_SEQ
 
 static inline char *eon(char *n) {
-	while (*n && (*n >= '0' && *n <= '9')) {
-		n++;
-	}
-	return n;
+	return r_str_trim_head_digits (n);
 }
 
 /* padding looks like:

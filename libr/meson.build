@@ -10,7 +10,8 @@ esil_plugins = [ 'dummy', 'forth', 'null' ]
 asm_plugins = [ 'null', 'att2intel' ]
 anal_plugins = [ 'null', 'autoname', 'a2f', 'tcc', 'blaze', 'tp', 'sbpf', 'path', 'drcov', 'callargs' ]
 arch_plugins = [ 'null' ]
-bin_plugins = [ 'any' ]
+bin_plugins = [ 'null' ]
+bin_demangle_plugins = get_option('demanglers')
 bin_ldr_plugins = [ 'ldr_linux' ]
 bin_xtr_plugins = []
 io_plugins = [ 'malloc', 'cyclic', 'xattr', 'fd', 'tap', 'default', 'null', 'rbuf', 'r2pipe' ]
@@ -22,7 +23,7 @@ if get_option('use_zip')
 endif
 bp_plugins = [ 'null' ]
 muta_plugins = [ 'null' ]
-core_plugins += [ 'prj', 'writedwarf', 'agD' ]
+core_plugins += [ 'prj', 'writedwarf', 'agD', 'pseudo' ]
 egg_plugins = [ 'xor' ]
 debug_plugins = [ 'null', 'io', 'esil', 'rap' ]
 lang_plugins = [ 'lib', 'pipe', 'qjs', 'tsc', 'spp' ]
@@ -374,9 +375,11 @@ io_plugins += [
     'bfdbg',
     'bochs',
     'debug',
+    'ebpf',
     'gdb',
     'gprobe',
     'gzip',
+    'haiku',
     'http',
     'ihex',
     'srec',
@@ -445,12 +448,14 @@ io_plugins += [
     'chip8',
     'dalvik',
     'gb',
+    'h8300',
     'java',
     'm68k',
     'mips',
     'pickle',
     'ppc',
     'riscv',
+    's390',
     'sh',
     'stm8',
     'sparc',
@@ -527,6 +532,7 @@ install_headers(include_files, install_dir: r2_incdir)
 
 r_util_files = [
   'include/r_util/bplist.h',
+  'include/r_util/r_trie.h',
   'include/r_util/pj.h',
   'include/r_util/libc.h',
   'include/r_util/r_alloc.h',

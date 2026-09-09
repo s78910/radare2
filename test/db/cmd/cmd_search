@@ -30,6 +30,22 @@ hit0_0
 EOF
 RUN
 
+NAME=search esil weak assign
+FILE=malloc://4
+ARGS=-n
+CMDS=<<EOF
+e asm.arch=x86
+e anal.arch=x86
+e asm.bits=32
+/E $$,!,1,eax,:=,eax,1,-,!,&
+s@hit0_0
+EOF
+EXPECT=<<EOF
+hit0_0
+0x0
+EOF
+RUN
+
 NAME=/ra any refs
 FILE=malloc://0x200
 CMDS=<<EOF
@@ -730,7 +746,7 @@ e asm.bits=32
 q
 EOF
 EXPECT=<<EOF
-[{"opcodes":[{"addr":0,"size":3,"opcode":"add esp, 8","type":"add"},{"addr":3,"size":1,"opcode":"pop ebx","type":"pop"},{"addr":4,"size":1,"opcode":"pop ebp","type":"pop"},{"addr":5,"size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":6,"classes":["ret","pivot","arithm"]},{"opcodes":[{"addr":1,"size":2,"opcode":"les ecx, [eax]","type":"mov"},{"addr":3,"size":1,"opcode":"pop ebx","type":"pop"},{"addr":4,"size":1,"opcode":"pop ebp","type":"pop"},{"addr":5,"size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":5,"classes":["ret","memread","mov"]},{"opcodes":[{"addr":2,"size":3,"opcode":"or byte [ebx + 0x5d], bl","type":"or"},{"addr":5,"size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":4,"classes":["ret","memwrite","logic"]}]
+[{"opcodes":[{"addr":0,"size":3,"opcode":"add esp, 8","type":"add"},{"addr":3,"size":1,"opcode":"pop ebx","type":"pop"},{"addr":4,"size":1,"opcode":"pop ebp","type":"pop"},{"addr":5,"size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":6,"classes":["ret","pivot","arithm","arithm_ct"]},{"opcodes":[{"addr":1,"size":2,"opcode":"les ecx, [eax]","type":"mov"},{"addr":3,"size":1,"opcode":"pop ebx","type":"pop"},{"addr":4,"size":1,"opcode":"pop ebp","type":"pop"},{"addr":5,"size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":5,"classes":["ret","memread","mov"]},{"opcodes":[{"addr":2,"size":3,"opcode":"or byte [ebx + 0x5d], bl","type":"or"},{"addr":5,"size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":4,"classes":["ret","memwrite","logic"]}]
 EOF
 RUN
 
@@ -746,7 +762,7 @@ e cfg.json.num=hex
 q
 EOF
 EXPECT=<<EOF
-[{"opcodes":[{"addr":"0x0","size":3,"opcode":"add esp, 8","type":"add"},{"addr":"0x3","size":1,"opcode":"pop ebx","type":"pop"},{"addr":"0x4","size":1,"opcode":"pop ebp","type":"pop"},{"addr":"0x5","size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":6,"classes":["ret","pivot","arithm"]},{"opcodes":[{"addr":"0x1","size":2,"opcode":"les ecx, [eax]","type":"mov"},{"addr":"0x3","size":1,"opcode":"pop ebx","type":"pop"},{"addr":"0x4","size":1,"opcode":"pop ebp","type":"pop"},{"addr":"0x5","size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":5,"classes":["ret","memread","mov"]},{"opcodes":[{"addr":"0x2","size":3,"opcode":"or byte [ebx + 0x5d], bl","type":"or"},{"addr":"0x5","size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":4,"classes":["ret","memwrite","logic"]}]
+[{"opcodes":[{"addr":"0x0","size":3,"opcode":"add esp, 8","type":"add"},{"addr":"0x3","size":1,"opcode":"pop ebx","type":"pop"},{"addr":"0x4","size":1,"opcode":"pop ebp","type":"pop"},{"addr":"0x5","size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":6,"classes":["ret","pivot","arithm","arithm_ct"]},{"opcodes":[{"addr":"0x1","size":2,"opcode":"les ecx, [eax]","type":"mov"},{"addr":"0x3","size":1,"opcode":"pop ebx","type":"pop"},{"addr":"0x4","size":1,"opcode":"pop ebp","type":"pop"},{"addr":"0x5","size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":5,"classes":["ret","memread","mov"]},{"opcodes":[{"addr":"0x2","size":3,"opcode":"or byte [ebx + 0x5d], bl","type":"or"},{"addr":"0x5","size":1,"opcode":"ret","type":"ret"}],"retaddr":5,"size":4,"classes":["ret","memwrite","logic"]}]
 EOF
 RUN
 
@@ -792,38 +808,6 @@ EXPECT=<<EOF
 EOF
 RUN
 
-NAME=/c/ search instructions extended regex
-FILE=bins/pe/standard.exe
-CMDS=<<EOF
-e asm.arch = x86
-e anal.arch = x86
-e asm.bits=32
-"/ad/ ror (bh|...), (cl|.)"
-q
-EOF
-EXPECT=<<EOF
-0x004019d2                 d3cc  ror esp, cl
-0x004019d5                 d0cf  ror bh, 1
-0x004019da               c1cde5  ror ebp, 0xe5
-EOF
-RUN
-
-NAME=/c/ search multiple instructions
-FILE=bins/pe/standard.exe
-CMDS=<<EOF
-e asm.arch = x86
-e anal.arch = x86
-e asm.bits=32
-"/ad/ ror bh, 1; shr ebp, cl; clc"
-q
-EOF
-EXPECT=<<EOF
-0x004019d5                 d0cf  ror bh, 1
-0x004019d7                 d3ed  shr ebp, cl
-0x004019d9                   f8  clc
-EOF
-RUN
-
 NAME=/o search offset of instructions backward
 FILE=malloc://1024
 ARGS=-a x86 -b 32
@@ -838,6 +822,21 @@ EXPECT=<<EOF
 0x00000002
 0x00000001
 0x00000000
+EOF
+RUN
+
+NAME=/o with invalid instruction in window
+FILE=malloc://64
+ARGS=-a arm -e asm.bits=64
+CMDS=<<EOF
+b 64
+wow 1f2003d5
+wx ffffffff @ 0x24
+s 0x40
+/o 9
+EOF
+EXPECT=<<EOF
+0x0000001c
 EOF
 RUN
 
@@ -2043,5 +2042,18 @@ CMDS=<<EOF
 EOF
 EXPECT=<<EOF
 [{"start":134520588,"end":134520844,"entropy":2.877},{"start":134520844,"end":134521100,"entropy":0.550},{"start":134512640,"end":134512896,"entropy":3.073},{"start":134512896,"end":134513408,"entropy":4.166}]
+EOF
+RUN
+
+NAME=search with io.cache over 0xffffffff data
+FILE=malloc://512
+CMDS=<<EOF
+wx ffffffffffffffff @ 0x100
+w GIF8 @ 0x1f0
+e io.cache=true
+/ GIF8
+EOF
+EXPECT=<<EOF
+0x000001f0 hit0_0 "GIF8"
 EOF
 RUN

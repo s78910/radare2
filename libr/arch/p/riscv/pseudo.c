@@ -18,12 +18,19 @@ static int replace(int argc, const char *argv[], char *newstr) {
 		{ 0, "andi", "# = # & #", { 1, 2, 3 } },
 		{ 0, "beq", "if (# == #) goto #", { 1, 2, 3 } },
 		{ 0, "auipc", "# = pc + #", { 1, 2 } },
-		{ 0, "bleu", "if (unsigned)# <= # goto #", { 1, 2, 3 } },
-		{ 0, "bltu", "if (unsigned)# < # goto #", { 1, 2, 3 } },
+		{ 0, "bleu", "if ((unsigned)# <= #) goto #", { 1, 2, 3 } },
+		{ 0, "bltu", "if ((unsigned)# < #) goto #", { 1, 2, 3 } },
+		{ 0, "bgeu", "if ((unsigned)# >= #) goto #", { 1, 2, 3 } },
+		{ 0, "bgtu", "if ((unsigned)# > #) goto #", { 1, 2, 3 } },
 		{ 0, "blt", "if (# < #) goto #", { 1, 2, 3 } },
+		{ 0, "ble", "if (# <= #) goto #", { 1, 2, 3 } },
+		{ 0, "bge", "if (# >= #) goto #", { 1, 2, 3 } },
+		{ 0, "bgt", "if (# > #) goto #", { 1, 2, 3 } },
 		{ 0, "beqz", "if (# == 0) goto #", { 1, 2 } },
 		{ 0, "bne", "if (# != #) goto #", { 1, 2, 3 } },
 		{ 0, "bnez", "if (# != 0) goto #", { 1, 2 } },
+		{ 0, "bltz", "if (# < 0) goto #", { 1, 2 } },
+		{ 0, "blez", "if (# <= 0) goto #", { 1, 2 } },
 		{ 0, "bgez", "if (# >= 0) goto #", { 1, 2 } },
 		{ 0, "bgtz", "if (# > 0) goto #", { 1, 2 } },
 		{ 0, "fld", "# = #", { 1, 2 } },
@@ -154,8 +161,8 @@ static char *parse(RAsmPluginSession *aps, const char *data) {
 			for (ptr++; *ptr == ' '; ptr++) {
 				;
 			}
-			strncpy (w0, buf, sizeof (w0) - 1);
-			strncpy (w1, ptr, sizeof (w1) - 1);
+			r_str_ncpy (w0, buf, sizeof (w0));
+			r_str_ncpy (w1, ptr, sizeof (w1));
 
 			optr = ptr;
 			if (*ptr == '(') {
@@ -179,8 +186,8 @@ static char *parse(RAsmPluginSession *aps, const char *data) {
 				for (ptr++; *ptr == ' '; ptr++) {
 					;
 				}
-				strncpy (w1, optr, sizeof (w1) - 1);
-				strncpy (w2, ptr, sizeof (w2) - 1);
+				r_str_ncpy (w1, optr, sizeof (w1));
+				r_str_ncpy (w2, ptr, sizeof (w2));
 				optr = ptr;
 				ptr = strchr (ptr, ',');
 				if (ptr) {
@@ -188,8 +195,8 @@ static char *parse(RAsmPluginSession *aps, const char *data) {
 					for (ptr++; *ptr == ' '; ptr++) {
 						;
 					}
-					strncpy (w2, optr, sizeof (w2) - 1);
-					strncpy (w3, ptr, sizeof (w3) - 1);
+					r_str_ncpy (w2, optr, sizeof (w2));
+					r_str_ncpy (w3, ptr, sizeof (w3));
 				}
 			}
 			ptr = strchr (buf, '(');

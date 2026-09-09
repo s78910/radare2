@@ -1,10 +1,10 @@
-/* radare - LGPL - Copyright 2007-2025 - pancake */
+/* radare - LGPL - Copyright 2007-2026 - pancake */
 
 #include <errno.h>
 #include <r_lib.h>
 #include <r_core.h>
 
-#if __linux__ ||  __APPLE__ || R2__WINDOWS__ || __NetBSD__ || __KFBSD__ || __OpenBSD__ || __serenity__
+#if __linux__ ||  __APPLE__ || R2__WINDOWS__ || __NetBSD__ || __KFBSD__ || __OpenBSD__ || __serenity__ || __HAIKU__
 #define DEBUGGER_SUPPORTED 1
 #else
 #define DEBUGGER_SUPPORTED 0
@@ -15,9 +15,16 @@
 
 #include <signal.h>
 #if R2__UNIX__ && !APPLE_SDK_IPHONEOS
+#if !defined(__HAIKU__)
 #include <sys/ptrace.h>
+#endif
 #include <sys/types.h>
 #include <sys/wait.h>
+#endif
+
+#if __HAIKU__
+#include <kernel/OS.h>
+#include <kernel/image.h>
 #endif
 
 #if __APPLE__
@@ -72,11 +79,19 @@ static int setup_tokens(void) {
 	}
 	err = 0;
 err_enable:
+	if (err) {
+		// read before CloseHandle, which clobbers the thread error code
+		// systems without SeDebugPrivilege (reactos, some wine setups) cannot
+		// grant it and debugging own child processes works anyway, so this is
+		// only worth reporting when it is an unexpected failure
+		if (GetLastError () == ERROR_NO_SUCH_PRIVILEGE) {
+			R_LOG_DEBUG ("SeDebugPrivilege is not available on this system");
+		} else {
+			r_sys_perror ("setup_tokens");
+		}
+	}
 	if (tok) {
 		CloseHandle (tok);
-	}
-	if (err) {
-		r_sys_perror ("setup_tokens");
 	}
 	return err;
 }
@@ -180,7 +195,7 @@ err_fork:
 }
 #else // windows
 
-#if (__APPLE__ && __POWERPC__) || !__APPLE__
+#if ((__APPLE__ && __POWERPC__) || !__APPLE__) && !defined(__HAIKU__)
 
 #if __APPLE__ || R2__BSD__
 static void inferior_abort_handler(int pid) {
@@ -233,6 +248,7 @@ static void handle_posix_error(int err) {
 }
 #endif
 
+#if !defined(__HAIKU__)
 static RRunProfile* _get_run_profile(RIO *io, int bits, char **argv) {
 	int i;
 	RRunProfile *rp = r_run_new ("");
@@ -282,6 +298,7 @@ static RRunProfile* _get_run_profile(RIO *io, int bits, char **argv) {
 	}
 	return rp;
 }
+#endif
 
 #if __APPLE__ && !__POWERPC__
 
@@ -359,7 +376,35 @@ static int platform_fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
 }
 #endif // __APPLE__ && !__POWERPC__
 
-#if (!(__APPLE__ && !__POWERPC__))
+#if __HAIKU__
+// spawn the team with load_image() so the debugger can attach before its suspended main thread runs
+static int platform_fork_and_ptraceme(RIO *io, int bits, const char *cmd) {
+	char **argv = r_str_argv (cmd, NULL);
+	if (!argv || !argv[0]) {
+		r_str_argv_free (argv);
+		return -1;
+	}
+	int argc = 0;
+	while (argv[argc]) {
+		argc++;
+	}
+	extern char **environ;
+	const thread_id th = load_image (argc, (const char **)argv, (const char **)environ);
+	r_str_argv_free (argv);
+	if (th < B_OK) {
+		R_LOG_ERROR ("load_image: %s", strerror (th));
+		return -1;
+	}
+	thread_info ti;
+	if (get_thread_info (th, &ti) != B_OK) {
+		kill_thread (th);
+		return -1;
+	}
+	// the main thread stays suspended until the debugger attaches
+	return (int)ti.team;
+}
+
+#elif (!(__APPLE__ && !__POWERPC__))
 typedef struct fork_child_data_t {
 	RIO *io;
 	int bits;
@@ -371,6 +416,10 @@ static void fork_child_callback(void *user) {
 	char **argv = r_str_argv (data->cmd, NULL);
 	if (!argv) {
 		exit (1);
+	}
+	if (!data->io->envprofile) {
+		char **env = r_sys_get_environ ();
+		data->io->envprofile = r_run_get_environ_profile (env);
 	}
 	r_sys_clearenv ();
 	RRunProfile *rp = _get_run_profile (data->io, data->bits, argv);
@@ -518,6 +567,13 @@ static RIODesc *__open(RIO *io, const char *file, int rw, int mode) {
 			snprintf (uri, sizeof (uri), "smach://%d", pid); //s is for spawn
 			_plugin = r_io_plugin_resolve (io, (const char *)uri + 1, false);
 			if (!_plugin || !_plugin->open || !_plugin->close) {
+				return NULL;
+			}
+			ret = _plugin->open (io, uri, rw, mode);
+#elif __HAIKU__
+			snprintf (uri, sizeof (uri), "hdbg://%d", pid);
+			_plugin = r_io_plugin_resolve (io, (const char *)uri, false);
+			if (!_plugin || !_plugin->open) {
 				return NULL;
 			}
 			ret = _plugin->open (io, uri, rw, mode);

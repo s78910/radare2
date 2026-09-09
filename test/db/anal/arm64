@@ -125,7 +125,7 @@ NAME=ao mte big endian
 FILE=-
 ARGS=-a arm -b 64 -e cfg.bigendian=true
 CMDS=<<EOF
-wx 91a0090c918201099ac813e8
+wx 0c09a09109018291e813c89a
 ao@0
 ?e ---
 ao@4
@@ -142,7 +142,7 @@ mnemonic: addg
 description: add with tag
 mask: ffffffff
 id: 7
-bytes: 91a0090c
+bytes: 0c09a091
 val: 0x00000200
 size: 4
 sign: false
@@ -160,7 +160,7 @@ mnemonic: addg
 description: add with tag
 mask: ffffffff
 id: 7
-bytes: 91820109
+bytes: 09018291
 val: 0x00000020
 size: 4
 sign: false
@@ -178,7 +178,7 @@ mnemonic: irg
 description: insert random tag
 mask: ffffffff
 id: 429
-bytes: 9ac813e8
+bytes: e813c89a
 size: 4
 sign: false
 type: mov
@@ -233,6 +233,62 @@ EXPECT=<<EOF
 (nofunc) 0x1000adfa8 [CALL] bl sym.imp.objc_autoreleasePoolPush
 (nofunc) 0x1000ae128 [CALL] bl sym.imp.objc_autoreleasePoolPush
 (nofunc) 0x1000c699c [CALL] bl sym.imp.objc_autoreleasePoolPush
+EOF
+RUN
+
+NAME=siguzas arm64 six rejects command suffix
+FILE=-
+CMDS=<<EOF
+a:sixref
+EOF
+EXPECT=<<EOF
+EOF
+EXPECT_ERR=<<EOF
+ERROR: Invalid command 'a:sixref'. See 'a:six?' for help
+EOF
+RUN
+
+NAME=siguzas arm64 six registers after purge
+FILE=bins/mach0/BatteryLife.arm_64.1
+CMDS=<<EOF
+e search.in=io.map
+s $S
+b $SS
+f target=0x1000ff5a0
+ax-*
+a:six
+axtq target
+EOF
+EXPECT=<<EOF
+0x100010f94
+0x1000a03f8
+0x1000addc4
+0x1000adfa8
+0x1000ae128
+0x1000c699c
+EOF
+RUN
+
+NAME=siguzas arm64 six target filters hits
+FILE=bins/mach0/BatteryLife.arm_64.1
+CMDS=<<EOF
+e search.in=io.map
+s $S
+b $SS
+f target=0x1000ff5a0
+ax-*
+a:six target
+?e ---
+axtq target
+EOF
+EXPECT=<<EOF
+0x100010f94: bl 0x1000ff5a0
+0x1000a03f8: bl 0x1000ff5a0
+0x1000addc4: bl 0x1000ff5a0
+0x1000adfa8: bl 0x1000ff5a0
+0x1000ae128: bl 0x1000ff5a0
+0x1000c699c: bl 0x1000ff5a0
+---
 EOF
 RUN
 
@@ -56200,5 +56256,131 @@ EXPECT=<<EOF
 0x100005eb4
 0x100006078
 0x1000060e0
+EOF
+RUN
+
+NAME=arm64 cc clobber and preserve register sets
+FILE=malloc://16
+ARGS=-a arm -b 64 -e anal.arch=arm
+CMDS=<<EOF
+k anal/cc/cc.arm64.clobber
+k anal/cc/cc.arm64.preserve
+EOF
+EXPECT=<<EOF
+x0,x1,x2,x3,x4,x5,x6,x7,x8,x9,x10,x11,x12,x13,x14,x15,x16,x17,x30,v0,v1,v2,v3,v4,v5,v6,v7,v16,v17,v18,v19,v20,v21,v22,v23,v24,v25,v26,v27,v28,v29,v30,v31
+x19,x20,x21,x22,x23,x24,x25,x26,x27,x28,x29,sp,v8,v9,v10,v11,v12,v13,v14,v15
+EOF
+RUN
+
+NAME=arm.v35 rev rbit clz sbc are not typed ill
+FILE=malloc://64
+ARGS=-a arm -b 64
+REQUIRE=arm.v35
+CMDS=<<EOF
+e asm.arch=arm.v35
+wx 0008c05a
+ao~type
+wx 2004c05a
+ao~type
+wx 2008c0da
+ao~type
+wx 2000c05a
+ao~type
+wx 2010c05a
+ao~type
+wx 2000025a
+ao~type
+EOF
+EXPECT=<<EOF
+type: mov
+type: mov
+type: mov
+type: mov
+type: mov
+type: sub
+EOF
+RUN
+
+NAME=arm.v35 af covers rev and stops at udf
+FILE=malloc://64
+ARGS=-a arm -b 64
+REQUIRE=arm.v35
+CMDS=<<EOF
+e asm.arch=arm.v35
+wx 0008c05ac0035fd6
+af
+afl
+af-
+wx 00000000 @ 4
+af
+afl
+EOF
+EXPECT=<<EOF
+0x00000000    1      8 fcn.00000000
+0x00000000    1      8 fcn.00000000
+EOF
+RUN
+
+NAME=arm.v35 udf types trap
+FILE=malloc://64
+ARGS=-a arm -b 64
+REQUIRE=arm.v35
+CMDS=<<EOF
+e asm.arch=arm.v35
+wx 00000000
+ao~type
+EOF
+EXPECT=<<EOF
+type: trap
+EOF
+RUN
+
+NAME=arm64 flag-setting ops get op type
+FILE=malloc://32
+ARGS=-a arm -b 64
+CMDS=<<EOF
+wx 200002ab
+ao 1~type[1]
+wx 200002ba
+ao 1~type[1]
+wx 200002eb
+ao 1~type[1]
+wx 200002ea
+ao 1~type[1]
+wx 200022ea
+ao 1~type[1]
+EOF
+EXPECT=<<EOF
+add
+add
+sub
+and
+and
+EOF
+RUN
+
+NAME=arm64 bic types as and
+FILE=malloc://32
+ARGS=-a arm -b 64
+CMDS=<<EOF
+wx 2000228a
+ao 1~type[1]
+EOF
+EXPECT=<<EOF
+and
+EOF
+RUN
+
+NAME=arm64 syscall number register follows asm.os
+FILE=malloc://64
+ARGS=-a arm -b 64 -e asm.os=linux
+CMDS=<<EOF
+arp~=SN
+e asm.os=macos
+arp~=SN
+EOF
+EXPECT=<<EOF
+=SN	x8
+=SN	x16
 EOF
 RUN

@@ -76,7 +76,7 @@ static int usage(int v) {
 	"             [-S string] [-f fmt] [-nN dword] [-dDw off:hex] [-e expr] file|f.asm|-\n");
 	if (v) {
 		printf (
-			" -a [arch]       select architecture (x86, mips, arm)\n"
+			" -a [arch]       select architecture (x86, mips, arm, ppc)\n"
 			" -b [bits]       register size (32, 64, ..)\n"
 			" -B [hexpairs]   append some hexpair bytes\n"
 			" -c [k=v]        set configuration options\n"
@@ -482,8 +482,10 @@ R_API int r_main_ragg2(int argc, const char **argv) {
 		return 0;
 	}
 
-	// initialize egg
-	r_egg_setup (es->e, arch, bits, 0, os);
+	// PPC32 and PPC64 ELFv1 are big-endian by convention. ppc64le will need
+	// explicit endian selection once RArchConfig integration lands (egg.c TODO).
+	const int egg_endian = (arch && !strcmp (arch, "ppc"))? 1: 0;
+	r_egg_setup (es->e, arch, bits, egg_endian, os);
 	if (file) {
 		if (R_STR_ISEMPTY (file)) {
 			R_LOG_ERROR ("Cannot open empty path");

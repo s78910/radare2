@@ -15,6 +15,22 @@ int64_t
 EOF
 RUN
 
+NAME=afvt strips wrapping quotes from the type
+FILE=bins/elf/ls
+CMDS=<<EOF
+s main
+af
+afvt argv "char *"
+afvt argv
+afvt argv 'int **'
+afvt argv
+EOF
+EXPECT=<<EOF
+char *
+int **
+EOF
+RUN
+
 NAME=pdf
 FILE=bins/elf/ls
 CMDS=<<EOF
@@ -26,16 +42,16 @@ EOF
 EXPECT=<<EOF
 arg int argc @ rdi
 arg char ** argv @ rsi
-var int64_t var_8h @ rsp+0x18
-var int64_t var_17h @ rsp+0x27
+var int8_t var_8h @ rsp+0x18
+var int8_t var_17h @ rsp+0x27
 var int64_t var_18h @ rsp+0x28
 var int64_t var_28h @ rsp+0x38
 var int64_t var_30h @ rsp+0x40
-var int64_t var_32h @ rsp+0x42
+var int16_t var_32h @ rsp+0x42
 var int64_t var_38h @ rsp+0x48
-var int64_t var_45h @ rsp+0x55
-var int64_t var_46h @ rsp+0x56
-var int64_t var_47h @ rsp+0x57
+var int16_t var_45h @ rsp+0x55
+var int8_t var_46h @ rsp+0x56
+var int8_t var_47h @ rsp+0x57
 var int64_t var_48h @ rsp+0x58
 {
   "reg": [
@@ -56,7 +72,7 @@ var int64_t var_48h @ rsp+0x58
     {
       "name": "var_8h",
       "kind": "var",
-      "type": "int64_t",
+      "type": "int8_t",
       "ref": {
         "base": "rsp",
         "offset": 24
@@ -65,7 +81,7 @@ var int64_t var_48h @ rsp+0x58
     {
       "name": "var_17h",
       "kind": "var",
-      "type": "int64_t",
+      "type": "int8_t",
       "ref": {
         "base": "rsp",
         "offset": 39
@@ -101,7 +117,7 @@ var int64_t var_48h @ rsp+0x58
     {
       "name": "var_32h",
       "kind": "var",
-      "type": "int64_t",
+      "type": "int16_t",
       "ref": {
         "base": "rsp",
         "offset": 66
@@ -119,7 +135,7 @@ var int64_t var_48h @ rsp+0x58
     {
       "name": "var_45h",
       "kind": "var",
-      "type": "int64_t",
+      "type": "int16_t",
       "ref": {
         "base": "rsp",
         "offset": 85
@@ -128,7 +144,7 @@ var int64_t var_48h @ rsp+0x58
     {
       "name": "var_46h",
       "kind": "var",
-      "type": "int64_t",
+      "type": "int8_t",
       "ref": {
         "base": "rsp",
         "offset": 86
@@ -137,7 +153,7 @@ var int64_t var_48h @ rsp+0x58
     {
       "name": "var_47h",
       "kind": "var",
-      "type": "int64_t",
+      "type": "int8_t",
       "ref": {
         "base": "rsp",
         "offset": 87
@@ -174,8 +190,8 @@ EXPECT=<<EOF
 / 22: sym.sub (int64_t arg1, int64_t arg2);
 |           ; arg int64_t arg1 @ rdi
 |           ; arg int64_t arg2 @ rsi
-|           ; var int64_t var_4h @ rbp-0x4
-|           ; var int64_t var_8h @ rbp-0x8
+|           ; var int32_t var_4h @ rbp-0x4
+|           ; var int32_t var_8h @ rbp-0x8
 |           0x08000040      f30f1efa       endbr64                     ; [01] -r-x section size 22 named .text
 |           0x08000044      55             push rbp
 |           0x08000045      4889e5         mov rbp, rsp
@@ -187,8 +203,8 @@ EXPECT=<<EOF
 \           0x08000055      c3             ret
 arg int64_t arg1 @ rdi
 arg int64_t arg2 @ rsi
-var int64_t var_4h @ rbp-0x4
-var int64_t var_8h @ rbp-0x8
+var int32_t var_4h @ rbp-0x4
+var int32_t var_8h @ rbp-0x8
 {
   "reg": [
     {
@@ -211,7 +227,7 @@ var int64_t var_8h @ rbp-0x8
     {
       "name": "var_4h",
       "kind": "var",
-      "type": "int64_t",
+      "type": "int32_t",
       "ref": {
         "base": "rbp",
         "offset": -4
@@ -220,7 +236,7 @@ var int64_t var_8h @ rbp-0x8
     {
       "name": "var_8h",
       "kind": "var",
-      "type": "int64_t",
+      "type": "int32_t",
       "ref": {
         "base": "rbp",
         "offset": -8
@@ -257,8 +273,8 @@ afv=
 EOF
 EXPECT=<<EOF
 afvR
-      argv  0x10000106c
       argc  0x10000106f
+      argv  0x10000106c
   var_640h  0x100001072
   var_648h  0x100001617,0x100001691
   var_654h  0x100001784
@@ -273,8 +289,8 @@ afvR
    var_30h  0x1000010d6
    var_2eh  0x1000010f0
 afvW
-      argv
       argc
+      argv
   var_640h
   var_648h  0x100001079
   var_654h  0x100001137,0x100001315
@@ -288,10 +304,10 @@ afvW
   var_440h
    var_30h
    var_2eh
-* argv
-R 0x10000106c  mov rbx, rsi
 * argc
 R 0x10000106f  mov r14d, edi
+* argv
+R 0x10000106c  mov rbx, rsi
 * var_640h
 R 0x100001072  lea rax, [var_640h]
 * var_648h
@@ -505,21 +521,21 @@ afvW
 |           0x00000000      80b4           push {r7}
 |           0x00000002      83b0           sub sp, 0xc
 |           0x00000004      00af           add r7, sp, 0
-|           0x00000006      7860           str r0, [r7, 4]
+|           0x00000006      7860           str r0, [var_ch]
 |           0x00000008      0b46           mov r3, r1
-|           0x0000000a      7b80           strh r3, [r7, 2]
+|           0x0000000a      7b80           strh r3, [var_eh]
 |           0x0000000c      1346           mov r3, r2
-|           0x0000000e      7b70           strb r3, [r7, 1]
-|           0x00000010      7b78           ldrb r3, [r7, 1]
+|           0x0000000e      7b70           strb r3, [var_fh]
+|           0x00000010      7b78           ldrb r3, [var_fh]
 |           0x00000012      002b           cmp r3, 0
 |       ,=< 0x00000014      03d0           beq 0x1e
-|       |   0x00000016      7a88           ldrh r2, [r7, 2]
-|       |   0x00000018      7b68           ldr r3, [r7, 4]
+|       |   0x00000016      7a88           ldrh r2, [var_eh]
+|       |   0x00000018      7b68           ldr r3, [var_ch]
 |       |   0x0000001a      9a61           str r2, [r3, 0x18]
 |      ,==< 0x0000001c      03e0           b 0x26
-|      |`-> 0x0000001e      7b88           ldrh r3, [r7, 2]
+|      |`-> 0x0000001e      7b88           ldrh r3, [var_eh]
 |      |    0x00000020      1a04           lsls r2, r3, 0x10
-|      |    0x00000022      7b68           ldr r3, [r7, 4]
+|      |    0x00000022      7b68           ldr r3, [var_ch]
 |      |    0x00000024      9a61           str r2, [r3, 0x18]
 |      `--> 0x00000026      00bf           nop
 |           0x00000028      0c37           adds r7, 0xc
@@ -602,13 +618,12 @@ EXPECT=<<EOF
             ;-- section.0.__TEXT.__text:
             ;-- entry0:
             ;-- func.100003f64:
-/ 68: int main (int argc, char **argv, char **envp);
+/ 68: int main (int argc, char **argv);
 |           ; arg int argc @ x0
 |           ; arg char **argv @ x1
-|           ; arg int64_t envp @ sp+0x20
 |           ; var int64_t var_0h @ sp+0x0
-|           ; var int64_t var_8h @ sp+0x8
-|           ; var int64_t var_ch @ sp+0xc
+|           ; var int32_t var_8h @ sp+0x8
+|           ; var int32_t var_ch @ sp+0xc
 |           0x100003f64      ff4300d1       sub sp, sp, 0x10           ; [00] -r-x section size 68 named 0.__TEXT.__text
 |           0x100003f68      ff0f00b9       str wzr, [var_ch]          ; argc
 |           0x100003f6c      e00b00b9       str w0, [var_8h]           ; argc
@@ -631,13 +646,12 @@ EXPECT=<<EOF
             ;-- section.0.__TEXT.__text:
             ;-- entry0:
             ;-- func.100003f64:
-/ 68: int main (int argc, char **argv, char **envp);
+/ 68: int main (int argc, char **argv);
 |           ; arg int argc @ x0
 |           ; arg char **argv @ x1
-|           ; arg int64_t envp @ sp+0x20
 |           ; var int64_t var_0h @ sp+0x0
-|           ; var int64_t var_8h @ sp+0x8
-|           ; var int64_t var_ch @ sp+0xc
+|           ; var int32_t var_8h @ sp+0x8
+|           ; var int32_t var_ch @ sp+0xc
 |           0x100003f64      ff4300d1       sub sp, sp, 0x10           ; [00] -r-x section size 68 named 0.__TEXT.__text
 |           0x100003f68      ff0f00b9       str wzr, [sp, 0xc]         ; argc
 |           0x100003f6c      e00b00b9       str w0, [sp, 8]            ; argc
@@ -670,16 +684,206 @@ EOF
 EXPECT=<<EOF
 'afvr rdi argc int
 'afvr rsi argv char **
-'afvs -64 var_48h int64_t
-'afvs -88 var_30h int64_t
-'afvs -113 var_17h int64_t
-'afvs -128 var_8h int64_t
-'afvs -96 var_28h int64_t
-'afvs -80 var_38h int64_t
-'afvs -67 var_45h int64_t
-'afvs -65 var_47h int64_t
-'afvs -66 var_46h int64_t
-'afvs -112 var_18h int64_t
-'afvs -86 var_32h int64_t
+'afvs 88 var_48h int64_t
+'afvs 64 var_30h int64_t
+'afvs 39 var_17h int8_t
+'afvs 24 var_8h int8_t
+'afvs 56 var_28h int64_t
+'afvs 72 var_38h int64_t
+'afvs 85 var_45h int16_t
+'afvs 87 var_47h int8_t
+'afvs 86 var_46h int8_t
+'afvs 40 var_18h int64_t
+'afvs 66 var_32h int16_t
+EOF
+RUN
+
+NAME=a direct tail jump forwards the callee args to the function it leaves
+FILE=bins/elf/ppc64v1-libz.so
+CMDS=<<EOF
+aa
+afs @ sym.gzopen
+afvr @ sym.gzwrite
+EOF
+EXPECT=<<EOF
+void sym.gzopen (int64_t arg1, int64_t arg2);
+arg int64_t arg1 @ r3
+arg int64_t arg2 @ r4
+arg int64_t arg3 @ r5
+EOF
+RUN
+
+NAME=x86_64 conditional and unconditional tail jumps forward args, own writes do not
+FILE=bins/elf/pltrel/x86_64-thunks.so
+CMDS=<<EOF
+aa
+afvr @ sym.forkwrap
+afvr @ sym.top_fork
+afs @ sym.setwrap
+afs @ sym.top_set
+EOF
+EXPECT=<<EOF
+arg int64_t arg1 @ rdi
+arg int64_t arg1 @ rdi
+void sym.setwrap ();
+void sym.top_set ();
+EOF
+RUN
+
+NAME=the signature and the variable list agree no matter which one is read first
+FILE=malloc://64
+ARGS=-a x86 -b 64
+CMDS=<<EOF
+wx 4889f84889f04889d0c3
+af+ 0 myfcn
+afb+ 0 0 10
+afvr rdx arg0 int64_t
+afsq
+afvr
+afsq
+EOF
+EXPECT=<<EOF
+void myfcn (int64_t arg0);
+arg int64_t arg0 @ rdx
+void myfcn (int64_t arg0);
+EOF
+RUN
+
+NAME=float register arguments keep the same order in the signature and in the variable list
+FILE=malloc://64
+ARGS=-a x86 -b 64
+CMDS=<<EOF
+wx 4889f84889f04889d0c3
+af+ 0 myfcn
+afb+ 0 0 10
+afvr xmm1 f2 double
+afvr xmm0 f1 double
+afvr rdi i1 int64_t
+afsq
+afvr
+EOF
+EXPECT=<<EOF
+void myfcn (int64_t i1, double f1, double f2);
+arg int64_t i1 @ rdi
+arg double f1 @ xmm0
+arg double f2 @ xmm1
+EOF
+RUN
+
+NAME=a declared struct takes over the recovered var inside it
+FILE=malloc://64
+ARGS=-a x86 -b 64
+CMDS=<<EOF
+"td struct pair {short lo; short hi;};"
+wx 8845ed897decc3
+af
+afvb
+afvt var_14h pair
+afvb
+afvx
+EOF
+EXPECT=<<EOF
+var int8_t var_13h @ rbp-0x13
+var int32_t var_14h @ rbp-0x14
+var pair var_14h @ rbp-0x14
+afvR
+      arg1  0x3
+   var_14h
+afvW
+      arg1
+   var_14h  0x3
+EOF
+RUN
+
+NAME=a struct spelled with its keyword takes over the recovered var inside it
+FILE=malloc://64
+ARGS=-a x86 -b 64
+CMDS=<<EOF
+"td struct pair {short lo; short hi;};"
+wx 8845ed897decc3
+af
+afvt var_14h "struct pair"
+afvb
+EOF
+EXPECT=<<EOF
+var struct pair var_14h @ rbp-0x14
+EOF
+RUN
+
+NAME=a typedef of a struct takes over the recovered var inside it
+FILE=malloc://64
+ARGS=-a x86 -b 64
+CMDS=<<EOF
+"td struct pair {short lo; short hi;};"
+"td typedef struct pair pair_t;"
+wx 8845ed897decc3
+af
+afvt var_14h pair_t
+afvb
+EOF
+EXPECT=<<EOF
+var pair_t var_14h @ rbp-0x14
+EOF
+RUN
+
+NAME=a qualified struct spelling takes over the recovered var inside it
+FILE=malloc://64
+ARGS=-a x86 -b 64
+CMDS=<<EOF
+"td struct pair {short lo; short hi;};"
+wx 8845ed897decc3
+af
+afvt var_14h "const struct pair"
+afvb
+EOF
+EXPECT=<<EOF
+var const struct pair var_14h @ rbp-0x14
+EOF
+RUN
+
+NAME=a qualified typedef of a struct takes over the recovered var inside it
+FILE=malloc://64
+ARGS=-a x86 -b 64
+CMDS=<<EOF
+"td struct pair {short lo; short hi;};"
+"td typedef struct pair pair_t;"
+wx 8845ed897decc3
+af
+afvt var_14h "const pair_t"
+afvb
+EOF
+EXPECT=<<EOF
+var const pair_t var_14h @ rbp-0x14
+EOF
+RUN
+
+NAME=a pointer to a struct does not take over the recovered var beside it
+FILE=malloc://64
+ARGS=-a x86 -b 64
+CMDS=<<EOF
+"td struct pair {short lo; short hi;};"
+wx 8845ed897decc3
+af
+afvt var_14h "struct pair *"
+afvb
+EOF
+EXPECT=<<EOF
+var int8_t var_13h @ rbp-0x13
+var struct pair * var_14h @ rbp-0x14
+EOF
+RUN
+
+NAME=a declared scalar leaves its neighbours alone
+FILE=malloc://64
+ARGS=-a x86 -b 64
+CMDS=<<EOF
+wx 897dec8975e8c3
+af
+afvt var_14h int32_t
+afvb
+EOF
+EXPECT=<<EOF
+var int32_t var_14h @ rbp-0x14
+var int32_t var_18h @ rbp-0x18
 EOF
 RUN

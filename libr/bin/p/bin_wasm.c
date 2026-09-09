@@ -1,4 +1,4 @@
-/* radare2 - MIT - Copyright 2017-2021 - pancake, cgvwzq */
+/* radare2 - MIT - Copyright 2017-2026 - pancake, cgvwzq */
 
 // https://webassembly.org/docs/binary-encoding/#module-structure
 
@@ -67,9 +67,6 @@ static int _export_finder(const void *_exp, const void *_needle) {
 }
 
 static inline RBinWasmExportEntry *find_export(RVecWasmPtr *exports, ut8 kind, ut32 index) {
-	if (!exports) {
-		return NULL;
-	}
 	struct search_fields sf = { .kind = kind, .index = index };
 	int n = vec_bsearch (exports, (void *)&sf, _export_finder);
 	return n >= 0? vector_at (exports, n): NULL;
@@ -129,23 +126,20 @@ static RList *entries(RBinFile *bf) {
 	return ret;
 }
 
-static RList *sections(RBinFile *bf) {
+static bool sections_vec(RBinFile *bf) {
 	RBinWasmObj *bin = bf && bf->bo? bf->bo->bin_obj: NULL;
-	RList *ret = r_list_newf ((RListFree)r_bin_section_free);
 	RList *secs = r_bin_wasm_get_sections (bin);
-	if (!ret || !secs) {
-		goto alloc_err;
+	if (!secs) {
+		return false;
 	}
+	RVecRBinSection_clear (&bf->bo->sections_vec);
 
 	RBinSection *ptr = NULL;
 	RBinWasmSection *sec;
 
 	RListIter *iter;
 	r_list_foreach (secs, iter, sec) {
-		ptr = R_NEW0 (RBinSection);
-		if (!ptr) {
-			goto alloc_err;
-		}
+		ptr = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 		ptr->name = strdup ((char *)sec->name);
 		if (sec->id == R_BIN_WASM_SECTION_DATA || sec->id == R_BIN_WASM_SECTION_MEMORY) {
 			ptr->is_data = true;
@@ -157,14 +151,8 @@ static RList *sections(RBinFile *bf) {
 		ptr->add = true;
 		// TODO permissions
 		ptr->perm = 0;
-		r_list_append (ret, ptr);
 	}
-	return ret;
-
-alloc_err:
-	r_list_free (secs);
-	r_list_free (ret);
-	return NULL;
+	return true;
 }
 
 static inline ut32 first_ord_not_import(RBinWasmObj *bin, ut32 kind) {
@@ -217,8 +205,13 @@ static inline bool symbols_add_import_kind(RBinWasmObj *bin, ut32 kind, RVecRBin
 
 static inline char *name_from_export(RBinWasmObj *bin, int type, int ord) {
 	RVecWasmPtr *exports = r_bin_wasm_get_exports (bin);
-	RBinWasmExportEntry *exp = find_export (exports, type, ord);
-	return exp? strdup (exp->field_str): NULL;
+	if (exports) {
+		RBinWasmExportEntry *exp = find_export (exports, type, ord);
+		if (exp) {
+			return strdup (exp->field_str);
+		}
+	}
+	return NULL;
 }
 
 static inline char *symbol_name(RBinWasmObj *bin, int type, int ord, bool load_unnamed, bool *is_exported) {
@@ -257,7 +250,10 @@ static inline bool symbols_add_code(RBinWasmObj *bin, RVecRBinSymbol *vec, bool 
 	if (!codes) {
 		return false;
 	}
+	RVecWasmPtr *funcs = r_bin_wasm_get_functions (bin);
+	RVecWasmPtr *types = r_bin_wasm_get_types (bin);
 	ut32 ordinal = first_ord_not_import (bin, R_BIN_WASM_EXTERNALKIND_Function);
+	ut32 code_idx = 0;
 	void **p;
 	R_VEC_FOREACH (codes, p) {
 		RBinWasmCodeEntry *func = *p;
@@ -265,17 +261,28 @@ static inline bool symbols_add_code(RBinWasmObj *bin, RVecRBinSymbol *vec, bool 
 		bool is_exported = false;
 		char *name = symbol_name (bin, R_BIN_WASM_EXTERNALKIND_Function, sym_ordinal, load_unnamed, &is_exported);
 		if (!name) {
+			code_idx++;
 			continue;
 		}
 		RBinSymbol *sym = RVecRBinSymbol_emplace_back (vec);
 		sym->forwarder = "NONE";
 		sym->type = R_BIN_TYPE_FUNC_STR;
-		sym->size = func->len;
+		sym->attr.size = func->len;
 		sym->vaddr = (ut64)func->code;
 		sym->paddr = (ut64)func->code;
 		sym->ordinal = sym_ordinal;
 		sym->bind = "NONE";
+		sym->attr.flags = R_BIN_ATTR_STATIC;
+		RBinWasmFunctionEntry *fe = vector_at (funcs, code_idx);
+		RBinWasmTypeEntry *te = fe? vector_at (types, fe->typeindex): NULL;
+		if (te) {
+			sym->arg_first = 0;
+			sym->arg_count = te->args? te->args->count: 0;
+			sym->arg_prefix = "l";
+			sym->ret_count = te->rets? te->rets->count: 0;
+		}
 		set_sym_name (sym, name, is_exported);
+		code_idx++;
 	}
 	return true;
 }
@@ -283,25 +290,27 @@ static inline bool symbols_add_code(RBinWasmObj *bin, RVecRBinSymbol *vec, bool 
 static void sym_set_content_type(RBinSymbol *sym, int t) {
 	switch (t) {
 	case R_BIN_WASM_VALUETYPE_i32:
-		sym->size = 4;
+		sym->attr.size = 4;
 		sym->type = "i32";
 		break;
 	case R_BIN_WASM_VALUETYPE_f32:
-		sym->size = 4;
+		sym->attr.size = 4;
 		sym->type = "u32";
 		break;
 	case R_BIN_WASM_VALUETYPE_i64:
-		sym->size = 8;
+		sym->attr.size = 8;
 		sym->type = "i64";
 		break;
 	case R_BIN_WASM_VALUETYPE_f64:
-		sym->size = 8;
+		sym->attr.size = 8;
 		sym->type = "f64";
 		break;
 	case R_BIN_WASM_VALUETYPE_v128:
-		sym->size = 16;
+		sym->attr.size = 16;
 		sym->type = "v128";
 		break;
+	case R_BIN_WASM_VALUETYPE_REF:
+	case R_BIN_WASM_VALUETYPE_REF_NULL:
 	case R_BIN_WASM_VALUETYPE_REFTYPE:
 		sym->type = "REF";
 		break;
@@ -360,15 +369,12 @@ static bool symbols_vec(RBinFile *bf) {
 			return false;
 		}
 	}
-
 	if (!symbols_add_code (bin, ret, load_unnamed)) {
 		return false;
 	}
-
 	if (!symbols_add_globals (bin, ret, load_unnamed)) {
 		return false;
 	}
-
 	// TODO: tables and memories
 	return true;
 }
@@ -503,12 +509,32 @@ static ut64 getoffset(RBinFile *bf, int type, int idx) {
 
 static const char *getname(RBinFile *bf, int type, int idx, bool sd) {
 	RBinWasmObj *bin = bf->bo->bin_obj;
-	switch (type) {
-	case 'f': // fcnidx
-		{
-			const char *r = r_bin_wasm_get_function_name (bin, idx);
-			return r? strdup (r): NULL;
+	if (type == 'f') { // fcnidx
+		const char *r = r_bin_wasm_get_function_name (bin, idx);
+		return r? strdup (r): NULL;
+	}
+	return NULL;
+}
+
+static const char *get_cc(RBinFile *bf, ut64 vaddr) {
+	R_RETURN_VAL_IF_FAIL (bf && bf->rbin, NULL);
+	RBinSymbol *m = r_bin_get_symbol_at (bf->rbin, vaddr);
+	if (m && m->arg_prefix) {
+		RStrBuf *sb = r_strbuf_new ("dyncc:");
+		if (!sb) {
+			return NULL;
 		}
+		if (m->arg_count > 0) {
+			r_strbuf_appendf (sb, "%s%u+%u", m->arg_prefix, m->arg_first, m->arg_count);
+		}
+		r_strbuf_append (sb, ":");
+		if (m->ret_count > 0) {
+			r_strbuf_appendf (sb, "r0+%u", m->ret_count);
+		}
+		char *s = r_strbuf_drain (sb);
+		const char *ret = r_str_constpool_get (&bf->rbin->constpool, s);
+		free (s);
+		return ret;
 	}
 	return NULL;
 }
@@ -527,13 +553,14 @@ RBinPlugin r_bin_plugin_wasm = {
 	.baddr = &baddr,
 	.binsym = &binsym,
 	.entries = &entries,
-	.sections = &sections,
+	.sections_vec = &sections_vec,
 	.symbols_vec = &symbols_vec,
 	.imports_vec = &imports_vec,
 	.info = &info,
 	.libs = &libs,
 	.get_offset = &getoffset,
 	.get_name = &getname,
+	.get_cc = &get_cc,
 	.create = &create,
 };
 

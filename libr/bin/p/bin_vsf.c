@@ -39,6 +39,27 @@ static bool check(RBinFile *bf, RBuffer *b) {
 	return false;
 }
 
+static bool read_maincpu(RBuffer *buf, ut64 offset, struct vsf_maincpu *cpu) {
+	ut8 raw[sizeof (*cpu)];
+	if (r_buf_read_at (buf, offset, raw, sizeof (raw)) != sizeof (raw)) {
+		return false;
+	}
+	const ut8 *p = raw;
+	cpu->clk = r_read_le32 (p);
+	p += sizeof (ut32);
+	cpu->ac = *p++;
+	cpu->xr = *p++;
+	cpu->yr = *p++;
+	cpu->sp = *p++;
+	cpu->pc = r_read_le16 (p);
+	p += sizeof (ut16);
+	cpu->st = *p++;
+	cpu->lastopcode = r_read_le32 (p);
+	p += sizeof (ut32);
+	cpu->ba_low_flags = r_read_le32 (p);
+	return true;
+}
+
 // XXX b vs bf->buf
 static bool load(RBinFile *bf, RBuffer *b, ut64 loadaddr) {
 	if (!check (bf, bf->buf)) {
@@ -101,7 +122,10 @@ static bool load(RBinFile *bf, RBuffer *b, ut64 loadaddr) {
 			}
 		} else if (module.major == 1 && !CMP_MODULE (VICE_MAINCPU)) {
 			res->maincpu = R_NEW0 (struct vsf_maincpu);
-			r_buf_read_at (bf->buf, offset + rd, (ut8 *)res->maincpu, sizeof (*res->maincpu));
+			if (!read_maincpu (bf->buf, offset + rd, res->maincpu)) {
+				R_LOG_ERROR ("Truncated MAINCPU module");
+				R_FREE (res->maincpu);
+			}
 		}
 #undef CMP_MODULE
 		offset += module.length;
@@ -127,8 +151,8 @@ static RList *mem(RBinFile *bf) {
 	return ret;
 }
 
-static void add_section(RList *list, const char *name, ut64 paddr, int size, ut64 vaddr, int perm) {
-	RBinSection *s = R_NEW0 (RBinSection);
+static void add_section(RBinFile *bf, const char *name, ut64 paddr, int size, ut64 vaddr, int perm) {
+	RBinSection *s = RVecRBinSection_emplace_back (&bf->bo->sections_vec);
 	s->name = strdup (name);
 	s->paddr = paddr;
 	s->size = size;
@@ -136,40 +160,39 @@ static void add_section(RList *list, const char *name, ut64 paddr, int size, ut6
 	s->vsize = size;
 	s->perm = perm;
 	s->add = true;
-	r_list_append (list, s);
 }
 
-static RList *sections(RBinFile *bf) {
+static bool sections_vec(RBinFile *bf) {
 	struct r_bin_vsf_obj *vsf_obj = (struct r_bin_vsf_obj *) bf->bo->bin_obj;
 	if (!vsf_obj) {
-		return NULL;
+		return false;
 	}
-	RList *ret = r_list_new ();
+	RVecRBinSection_clear (&bf->bo->sections_vec);
 	const int m_idx = vsf_obj->machine_idx;
 	// ROM sections first, then RAM, to simulate bank switching
 	if (vsf_obj->rom) {
 		if (!m_idx) {
-			add_section (ret, "BASIC", vsf_obj->rom + r_offsetof (struct vsf_c64rom, basic), 1024 * 8, 0xa000, R_PERM_RX);
-			add_section (ret, "KERNAL", vsf_obj->rom + r_offsetof (struct vsf_c64rom, kernal), 1024 * 8, 0xe000, R_PERM_RX);
+			add_section (bf, "BASIC", vsf_obj->rom + r_offsetof (struct vsf_c64rom, basic), 1024 * 8, 0xa000, R_PERM_RX);
+			add_section (bf, "KERNAL", vsf_obj->rom + r_offsetof (struct vsf_c64rom, kernal), 1024 * 8, 0xe000, R_PERM_RX);
 		} else {
 			ut64 basic_off = vsf_obj->rom + r_offsetof (struct vsf_c128rom, basic);
-			add_section (ret, "BASIC", basic_off, 1024 * 28, 0x4000, R_PERM_RX);
-			add_section (ret, "MONITOR", basic_off + 1024 * 28, 1024 * 4, 0xb000, R_PERM_RX);
-			add_section (ret, "EDITOR", vsf_obj->rom + r_offsetof (struct vsf_c128rom, editor), 1024 * 4, 0xc000, R_PERM_RX);
-			add_section (ret, "KERNAL", vsf_obj->rom + r_offsetof (struct vsf_c128rom, kernal), 1024 * 8, 0xe000, R_PERM_RX);
+			add_section (bf, "BASIC", basic_off, 1024 * 28, 0x4000, R_PERM_RX);
+			add_section (bf, "MONITOR", basic_off + 1024 * 28, 1024 * 4, 0xb000, R_PERM_RX);
+			add_section (bf, "EDITOR", vsf_obj->rom + r_offsetof (struct vsf_c128rom, editor), 1024 * 4, 0xc000, R_PERM_RX);
+			add_section (bf, "KERNAL", vsf_obj->rom + r_offsetof (struct vsf_c128rom, kernal), 1024 * 8, 0xe000, R_PERM_RX);
 		}
 	}
 	if (vsf_obj->mem) {
 		int offset = _machines[m_idx].offset_mem;
 		if (!m_idx) {
-			add_section (ret, "RAM", vsf_obj->mem + offset, _machines[m_idx].ram_size, 0, R_PERM_RWX);
+			add_section (bf, "RAM", vsf_obj->mem + offset, _machines[m_idx].ram_size, 0, R_PERM_RWX);
 		} else {
 			int bank_size = 1024 * 64;
-			add_section (ret, "RAM BANK 0", vsf_obj->mem + offset, bank_size, 0, R_PERM_RWX);
-			add_section (ret, "RAM BANK 1", vsf_obj->mem + offset + bank_size, bank_size, 0, R_PERM_RWX);
+			add_section (bf, "RAM BANK 0", vsf_obj->mem + offset, bank_size, 0, R_PERM_RWX);
+			add_section (bf, "RAM BANK 1", vsf_obj->mem + offset + bank_size, bank_size, 0, R_PERM_RWX);
 		}
 	}
-	return ret;
+	return true;
 }
 
 static RBinInfo *info(RBinFile *bf) {
@@ -348,7 +371,7 @@ static bool symbols_vec(RBinFile *bf) {
 		RBinSymbol *ptr = RVecRBinSymbol_emplace_back (ret);
 		ptr->name = r_bin_name_new_from (r_str_ndup (_symbols[i].symbol_name, R_BIN_SIZEOF_STRINGS));
 		ptr->vaddr = _symbols[i].address;
-		ptr->size = 2;
+		ptr->attr.size = 2;
 		ptr->paddr = vsf_obj->mem + offset + _symbols[i].address;
 		ptr->ordinal = i;
 	}
@@ -386,7 +409,7 @@ RBinPlugin r_bin_plugin_vsf = {
 	.load = &load,
 	.check = &check,
 	.entries = &entries,
-	.sections = sections,
+	.sections_vec = &sections_vec,
 	.symbols_vec = &symbols_vec,
 	.info = &info,
 	.destroy = &destroy,

@@ -43,12 +43,10 @@ static int op_thumb(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *data, i
 	if (len < 2) {
 		return 0;
 	}
-	ut16 *_ins = (ut16 *) data;
-	ut16 ins = *_ins;
+	ut16 ins = r_read_le16 (data);
 	ut32 ins32 = 0;
 	if (len > 3) {
-		ut32 *_ins32 = (ut32 *) data;
-		ins32 = *_ins32;
+		ins32 = r_read_le32 (data);
 	}
 
 	struct winedbg_arm_insn *arminsn = arm_new ();
@@ -94,7 +92,7 @@ static int op_thumb(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *data, i
 			return op->size;
 		}
 	}
-	if (ins == 0xbf) {
+	if (ins == 0xbf00) {
 		// TODO: add support for more NOP instructions
 		op->type = R_ANAL_OP_TYPE_NOP;
 	} else if (((op_code = ((ins & B4 (B1111, B1000, 0, 0)) >> 11)) >= 12 && op_code <= 17)) {
@@ -110,18 +108,18 @@ static int op_thumb(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *data, i
 		} else {
 			op->type = R_ANAL_OP_TYPE_STORE;
 		}
-	} else if ((ins & B4 (B1111, 0, 0, 0)) == B4 (B1101, 0, 0, 0)) {
-		// BNE..
-		int delta = (ins & B4 (0, 0, B1111, B1111));
+	} else if ((ins & B4 (B1111, 0, 0, 0)) == B4 (B1101, 0, 0, 0) && ((ins >> 8) & 0xf) < 0xe) {
+		// B<cond> T1: signed imm8 (cond 0xe/0xf are UDF/SVC, handled below)
+		int delta = (st8) (ins & 0xff);
 		op->type = R_ANAL_OP_TYPE_CJMP;
-		op->jump = addr + 4 + (delta << 1);
-		op->fail = addr + 4;
+		op->jump = addr + 4 + (delta * 2);
+		op->fail = addr + 2;
 	} else if ((ins & B4 (B1111, B1000, 0, 0)) == B4 (B1110, 0, 0, 0)) {
-		// B
-		int delta = (ins & B4 (0, 0, B1111, B1111));
+		// B T2: signed imm11
+		int delta = ((st16) (ins << 5)) >> 5;
 		op->type = R_ANAL_OP_TYPE_JMP;
-		op->jump = addr + 4 + (delta << 1);
-		op->fail = addr + 4;
+		op->jump = addr + 4 + (delta * 2);
+		op->fail = UT64_MAX;
 	} else if ((ins & B4 (B1111, B1111, B1000, 0)) == B4 (B0100, B0111, B1000, 0)) {
 		// BLX
 		op->type = R_ANAL_OP_TYPE_UCALL;
@@ -140,15 +138,15 @@ static int op_thumb(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *data, i
 			high |= B4 (B1111, B1000, 0, 0) << 16;
 		}
 		int delta = high + ((nextins & B4 (0, B0111, B1111, B1111)) * 2);
-		op->jump = (int) (addr + 4 + (delta));
+		op->jump = addr + 4 + delta;
 		op->type = R_ANAL_OP_TYPE_CALL;
 		op->fail = addr + 4;
-	} else if ((ins & B4 (B1111, B1111, 0, 0)) == B4 (B1011, B1110, 0, 0)) {
-		op->type = R_ANAL_OP_TYPE_TRAP;
-		op->val = (ut64) (ins >> 8);
-	} else if ((ins & B4 (B1111, B1111, 0, 0)) == B4 (B1101, B1111, 0, 0)) {
-		op->type = R_ANAL_OP_TYPE_SWI;
-		op->val = (ut64) (ins >> 8);
+	} else if ((ins >> 8) == 0xbe || (ins >> 8) == 0xde || (ins >> 8) == 0xdf) {
+		// BKPT and UDF trap, SVC is a swi
+		op->type = ((ins >> 8) == 0xdf)? R_ANAL_OP_TYPE_SWI: R_ANAL_OP_TYPE_TRAP;
+		op->val = ins & 0xff;
+		op->jump = UT64_MAX;
+		op->fail = UT64_MAX;
 	}
 	return op->size;
 }
@@ -314,10 +312,11 @@ static int disassemble(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *buf,
 
 
 static int arm_op32(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *data, int len, ut32 mask) {
+	const ut8 *odata = data;
 	const ut8 *b = (ut8 *) data;
 	ut8 ndata[4] = {0};
-	ut32 branch_dst_addr, i = 0;
-	ut32 *code = (ut32 *) data;
+	ut32 branch_dst_addr;
+	ut32 code = 0;
 
 	if (!data) {
 		return 0;
@@ -331,12 +330,17 @@ static int arm_op32(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *data, i
 	op->type = R_ANAL_OP_TYPE_UNK;
 
 	if (R_ARCH_CONFIG_IS_BIG_ENDIAN (as->config)) {
+		int i;
+		const int oplen = R_MIN (len, 4);
+		for (i = 0; i < oplen; i++) {
+			ndata[i] = odata[oplen - i - 1];
+		}
 		b = data = ndata;
-		ut8 tmp = data[3];
-		ndata[0] = data[3];
-		ndata[1] = data[2];
-		ndata[2] = data[1];
-		ndata[3] = tmp;
+		if (len >= 4) {
+			code = r_read_be32 (odata);
+		}
+	} else if (len >= 4) {
+		code = r_read_le32 (odata);
 	}
 	if (as->config->bits == 16) {
 		arm_free (arminsn);
@@ -388,7 +392,7 @@ static int arm_op32(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *data, i
 		}
 	} else if (b[3] == 0xef) {
 		op->type = R_ANAL_OP_TYPE_SWI;
-		op->val = (b[0] | (b[1] << 8) | (b[2] << 2));
+		op->val = (b[0] | (b[1] << 8) | (b[2] << 16));
 	} else if ((b[3] & 0xf) == 5) {  // [reg,0xa4]
 #if 0
 		0x00000000      a4a09fa4 ldrge sl, [pc], 0xa4
@@ -430,9 +434,9 @@ static int arm_op32(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *data, i
 		op->type = R_ANAL_OP_TYPE_SUB;
 		op->stackop = R_ANAL_STACK_INC;
 		op->val = -b[0];
-	} else if (code[i] == 0x1eff2fe1 || code[i] == 0xe12fff1e) {  // bx lr
+	} else if (code == 0x1eff2fe1 || code == 0xe12fff1e) {  // bx lr
 		op->type = R_ANAL_OP_TYPE_RET;
-	} else if (code[i] & ARM_DTX_LOAD) {  // IS_LOAD(code[i])) {
+	} else if (code & ARM_DTX_LOAD) {  // IS_LOAD(code)) {
 		ut32 ptr = 0;
 		op->type = R_ANAL_OP_TYPE_MOV;
 		if (b[2] == 0x1b) {
@@ -454,28 +458,26 @@ static int arm_op32(RArchSession *as, RAnalOp *op, ut64 addr, const ut8 *data, i
 		}
 	}
 
-	if (IS_LOAD (code[i])) {
+	if (IS_LOAD (code)) {
 		op->type = R_ANAL_OP_TYPE_LOAD;
 		op->refptr = 4;
 	}
-	if (((((code[i] & 0xff) >= 0x10 && (code[i] & 0xff) < 0x20)) &&
-	     ((code[i] & 0xffffff00) == 0xe12fff00)) ||
-	    IS_EXITPOINT (code[i])) {
-		// if (IS_EXITPOINT (code[i])) {
-		b = data;
+	if (((((code & 0xff) >= 0x10 && (code & 0xff) < 0x20)) &&
+	     ((code & 0xffffff00) == 0xe12fff00)) ||
+	    IS_EXITPOINT (code)) {
+		// if (IS_EXITPOINT (code)) {
 		branch_dst_addr = disarm_branch_offset (
-			addr, b[0] | (b[1] << 8) |
-			(b[2] << 16));                // code[i]&0x00FFFFFF);
+			addr, code & 0x00ffffff);
 		op->ptr = 0;
-		if ((((code[i] & 0xff) >= 0x10 && (code[i] & 0xff) < 0x20)) &&
-		    ((code[i] & 0xffffff00) == 0xe12fff00)) {
+		if ((((code & 0xff) >= 0x10 && (code & 0xff) < 0x20)) &&
+		    ((code & 0xffffff00) == 0xe12fff00)) {
 			op->type = R_ANAL_OP_TYPE_UJMP;
-		} else if (IS_BRANCHL (code[i])) {
+		} else if (IS_BRANCHL (code)) {
 			op->type = R_ANAL_OP_TYPE_CALL;
 			op->jump = branch_dst_addr;
 			op->fail = addr + 4;
-		} else if (IS_BRANCH (code[i])) {
-			if (IS_CONDAL (code[i])) {
+		} else if (IS_BRANCH (code)) {
+			if (IS_CONDAL (code)) {
 				op->type = R_ANAL_OP_TYPE_JMP;
 				op->jump = branch_dst_addr;
 				op->fail = UT64_MAX;
@@ -582,6 +584,7 @@ static char *set_reg_profile(RArchSession *as) {
 		"=PC	r15\n"
 		"=SP	r13\n"
 		"=BP	r14\n" // XXX
+		"=LR	lr\n"
 		"=A0	r0\n"
 		"=A1	r1\n"
 		"=A2	r2\n"

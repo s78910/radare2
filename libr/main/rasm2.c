@@ -463,6 +463,34 @@ static int is_binary(const char *s) {
 	return 0;
 }
 
+static int binstr_to_bytes(const char *s, ut8 *buf, int len) {
+	int bit_count = 0;
+	int byte_count = 0;
+	ut8 byte = 0;
+	for (; *s; s++) {
+		if (*s == '_' || IS_WHITESPACE (*s)) {
+			continue;
+		}
+		if (*s == 'b' && !s[1]) {
+			break;
+		}
+		if (*s != '0' && *s != '1') {
+			return -1;
+		}
+		byte = (byte << 1) | (*s - '0');
+		bit_count++;
+		if (bit_count == 8) {
+			if (byte_count >= len) {
+				return -1;
+			}
+			buf[byte_count++] = byte;
+			bit_count = 0;
+			byte = 0;
+		}
+	}
+	return bit_count? -1: byte_count;
+}
+
 static ut64 pcpos(const char *buf) {
 	ut64 pos = 0;
 	int pair = 0;
@@ -503,24 +531,18 @@ static int rasm_disasm(RAsmState *as, ut64 addr, const char *buf, int len, int b
 	if (blen > 0) {
 		if (r_str_startswith (buf, "Bx")) {
 			buf += 2;
+		} else if (r_str_startswith (buf, "0b")) {
+			buf += 2;
 		}
-		char *nstr = r_str_newf ("%s%s", r_str_startswith (buf, "0b")? "": "0b", buf);
-		if (nstr[strlen (nstr) - 1] == 'b') {
-			nstr[strlen (nstr) - 1] = 0;
+		const int byte_len = binstr_to_bytes (buf, bbuf, sizeof (bbuf));
+		if (byte_len < 1) {
+			R_LOG_ERROR ("Invalid binary string");
+			return 0;
 		}
-		ut64 n = r_num_get (NULL, nstr);
-		free (nstr);
-		memcpy (bbuf, &n, 8);
 		buf = (const char *)&bbuf;
 		as->opt.bin = true;
 		hex = false;
-		if (blen > 32) {
-			r_write_ble64 (&bbuf, n, !R_SYS_ENDIAN);
-			len = 8;
-		} else {
-			r_write_ble32 (&bbuf, n, !R_SYS_ENDIAN);
-			len = 4;
-		}
+		len = byte_len;
 	}
 	ut64 pcaddr = UT64_MAX;
 	if (as->opt.bin) {
@@ -720,7 +742,7 @@ static int print_assembly_output(RAsmState *as, const char *buf, ut64 offset, ut
 	int bits = as->opt.bits;
 	if (as->opt.rad) {
 		printf ("e asm.arch=%s\n", arch? arch: R_SYS_ARCH);
-		printf ("e asm.bits=%d\n", bits? bits: R_SYS_BITS);
+		printf ("e asm.bits=%d\n", bits? bits: (int)R_SYS_BITS);
 		if (offset) {
 			printf ("s 0x%" PFMT64x "\n", offset);
 		}
@@ -975,16 +997,12 @@ R_API int r_main_rasm2(int argc, const char *argv[]) {
 		} else {
 			rarch2_list (as, opt.argv[opt.ind]);
 		}
-		ret = 1;
 		goto beach;
 	}
 
 	if (as->opt.envhelp) {
 		rasm_env_print (opt.arg);
 		goto beach;
-	}
-	if (as->opt.cpu) {
-		r_arch_config_set_cpu (as->a->config, as->opt.cpu);
 	}
 	if (arch) {
 		if (!r_asm_use (as->a, arch)) {
@@ -1007,19 +1025,23 @@ R_API int r_main_rasm2(int argc, const char *argv[]) {
 		ret = 0;
 		goto beach;
 	}
-	r_asm_set_bits (as->a, R_STR_ISNOTEMPTY (env_bits)? atoi (env_bits): bits);
-	r_anal_set_bits (as->anal, R_STR_ISNOTEMPTY (env_bits)? atoi (env_bits): bits);
+	bits = R_STR_ISNOTEMPTY (env_bits)? atoi (env_bits): bits;
+	r_asm_set_bits (as->a, bits);
+	r_anal_set_bits (as->anal, bits);
+	as->opt.bits = bits;
 	as->a->syscall = r_syscall_new ();
+	char *asmcpu = NULL;
 	if (R_STR_ISNOTEMPTY (as->opt.cpu)) {
-		// check if selected cpu is valid
-		const char *cpus = R_UNWRAP4 (as->anal->arch, session, plugin, cpus);
-		if (cpus && !strstr (cpus, as->opt.cpu)) {
-			R_LOG_WARN ("Invalid CPU. See -a, -b and asm.cpu values (%s)", cpus);
+		RArchPlugin *ap = R_UNWRAP3 (as->anal->arch, session, plugin);
+		asmcpu = ap? r_arch_plugin_cpucheck (ap, as->opt.cpu): strdup (as->opt.cpu);
+		if (asmcpu) {
+			r_arch_config_set_cpu (as->a->config, asmcpu);
 		} else {
-			R_LOG_WARN ("Ignored -c asm.cpu, provided plugin exposes no CPUs models");
+			R_LOG_WARN ("Invalid CPU '%s'. See -a, -b and asm.cpu values", as->opt.cpu);
 		}
 	}
-	r_syscall_setup (as->a->syscall, arch, bits, as->opt.cpu, as->opt.kernel);
+	r_syscall_setup (as->a->syscall, arch, bits, asmcpu, as->opt.kernel);
+	free (asmcpu);
 	{
 		bool canbebig = r_asm_set_big_endian (as->a, as->opt.isbig);
 		if (as->opt.isbig && !canbebig) {

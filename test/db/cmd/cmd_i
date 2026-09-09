@@ -81,7 +81,7 @@ file     malloc://1025
 size     0x401
 humansz  1.0K
 mode     rwx
-format   any
+format   null
 iorw     true
 block    0x100
 nth vaddr bind type lib name
@@ -124,7 +124,7 @@ file     malloc://1024
 size     0x400
 humansz  1K
 mode     rwx
-format   any
+format   null
 iorw     true
 block    0x100
 e cfg.bigendian=false
@@ -527,38 +527,35 @@ pthread_mutex_unlock
 0x00012c54 28 std::bad_typeid::~bad_typeid()
 0x00014b58 15 typeinfo name for std::bad_typeid
 --
-0x00000000 [0x00006060 - 0x0000697c] jni _JNIEnv
-0x00000000 [0x0000699c - 0x000074f8] jni SystemClassLoaderInjector
-0x00000000 [0x0000886c - 0x000094c8] c++ std
-0x00000000 [0x00008884 - 0x000088f4] c++ std::exception
-0x00000000 [0x0000889c - 0x00008904] c++ std::bad_exception
-0x00000000 [0x000088c4 - 0x000088c4] c++ __cxxabiv1::__forced_unwind
-0x00000000 [0x000088dc - 0x000088dc] c++ __cxxabiv1::__foreign_exception
-0x00000000 [0x00008984 - 0x00008984] c++ __eh_globals_init
-0x00000000 [0x0000943c - 0x00009488] c++ __cxxabiv1
-0x00000000 [0x000094e4 - 0x000094e4] c++ __cxxabiv1::__fundamental_type_info
-0x00000000 [0x000097bc - 0x00009854] c++ std::type_info
-0x00000000 [0x00009528 - 0x00009574] c++ __cxxabiv1::__pointer_type_info
-0x00000000 [0x00009dd0 - 0x00009e34] c++ __cxxabiv1::__pbase_type_info
-0x00000000 [0x000095f4 - 0x0000977c] c++ __cxxabiv1::__si_class_type_info
-0x00000000 [0x00009868 - 0x0000998c] c++ __cxxabiv1::__class_type_info
-0x00000000 [0x00009ec4 - 0x000127c8] c++ __gnu_cxx
-0x00000000 [0x000126b0 - 0x000126f8] c++ __gnu_cxx::__concurrence_lock_error
-0x00000000 [0x000126c0 - 0x000126d0] c++ __gnu_cxx::__concurrence_unlock_error
-0x00000000 [0x00012bc8 - 0x00012bd8] c++ std::bad_cast
-0x00000000 [0x00012c1c - 0x00012c2c] c++ std::bad_typeid
+0x00006060 [0x00006060 - 0x0000699a] jni _JNIEnv
+0x000074f8 [0x0000699c - 0x0000755c] jni SystemClassLoaderInjector
+0x00008884 [0x00008884 - 0x00008930] c++ std::exception
+0x0000889c [0x0000889c - 0x0000894c] c++ std::bad_exception
+0x000088c4 [0x000088c4 - 0x00008968] c++ __cxxabiv1::__forced_unwind
+0x000088dc [0x000088dc - 0x00008984] c++ __cxxabiv1::__foreign_exception
+0x00008984 [0x00008984 - 0x000089b8] c++ __eh_globals_init
+0x000094e4 [0x000094e4 - 0x00009528] c++ __cxxabiv1::__fundamental_type_info
+0x000097bc [0x000097bc - 0x00009858] c++ std::type_info
+0x00009528 [0x00009528 - 0x000095f4] c++ __cxxabiv1::__pointer_type_info
+0x00009df0 [0x00009dd0 - 0x00009ec4] c++ __cxxabiv1::__pbase_type_info
+0x000095f4 [0x000095f4 - 0x000097bc] c++ __cxxabiv1::__si_class_type_info
+0x000098d8 [0x00009868 - 0x000099fc] c++ __cxxabiv1::__class_type_info
+0x000126b0 [0x000126b0 - 0x00012780] c++ __gnu_cxx::__concurrence_lock_error
+0x000126c0 [0x000126c0 - 0x00012750] c++ __gnu_cxx::__concurrence_unlock_error
+0x00012bd8 [0x00012bc8 - 0x00012c1c] c++ std::bad_cast
+0x00012c2c [0x00012c1c - 0x00012c70] c++ std::bad_typeid
 --
 0x00006060 10 _JNIEnv::FindClass(char const*)
 0x00007c7a 10 __aeabi_unwind_cpp_pr1
 0x0000606a 10 _JNIEnv::DeleteLocalRef(_jobject*)
-0x00006074 26 _JNIEnv::NewObject(_jclass*, _jmethodID*, ...)
+0x00006074 26 _JNIEnv::NewObject(_jclass*, _jmethodID*, ::)
 0x0000608e 10 _JNIEnv::GetObjectClass(_jobject*)
 0x00006098 12 _JNIEnv::GetMethodID(_jclass*, char const*, char const*)
 0x00007c70 10 __aeabi_unwind_cpp_pr0
-0x000060a4 28 _JNIEnv::CallObjectMethod(_jobject*, _jmethodID*, ...)
-0x000060c0 28 _JNIEnv::CallVoidMethod(_jobject*, _jmethodID*, ...)
+0x000060a4 28 _JNIEnv::CallObjectMethod(_jobject*, _jmethodID*, ::)
+0x000060c0 28 _JNIEnv::CallVoidMethod(_jobject*, _jmethodID*, ::)
 0x000060dc 14 _JNIEnv::GetStaticMethodID(_jclass*, char const*, char const*)
-0x000060ea 30 _JNIEnv::CallStaticObjectMethod(_jclass*, _jmethodID*, ...)
+0x000060ea 30 _JNIEnv::CallStaticObjectMethod(_jclass*, _jmethodID*, ::)
 0x00006108 48 getPackageName(_JNIEnv*, _jobject*)
 0x00006138 164 JstringToString(_JNIEnv*, _jstring*)
 0x000061dc 136 CharTojstring(_JNIEnv*, char const*)
@@ -579,8 +576,8 @@ pthread_mutex_unlock
 0x00006918 28 register_ndk_load(_JNIEnv*)
 0x00006934 40 JNI_OnLoad
 0x0000695c 2 decodeFile()
-0x0000695e 30 _JNIEnv::CallStaticIntMethod(_jclass*, _jmethodID*, ...)
-0x0000697c 30 _JNIEnv::CallStaticVoidMethod(_jclass*, _jmethodID*, ...)
+0x0000695e 30 _JNIEnv::CallStaticIntMethod(_jclass*, _jmethodID*, ::)
+0x0000697c 30 _JNIEnv::CallStaticVoidMethod(_jclass*, _jmethodID*, ::)
 0x0000699c 144 SystemClassLoaderInjector::findBaseDexClassloader(_JNIEnv*, _jobject*)
 0x00006a2c 144 SystemClassLoaderInjector::getField(_JNIEnv*, _jobject*, _jobject*, _jstring*)
 0x00006abc 56 SystemClassLoaderInjector::getPathList(_JNIEnv*, _jobject*)
@@ -1053,7 +1050,7 @@ pthread_mutex_unlock
 0x13f9c 30 29 terminate called recursively\n
 0x13fbc 49 48 terminate called after throwing an instance of '
 0x13ff4 46 45 terminate called without an active exception\n
-0x14024 12 11   what():
+0x14024 12 9   what():
 0x14030 9 8 _GLOBAL_
 0x1403c 22 21 (anonymous namespace)
 0x14054 15 14 string literal
@@ -1061,47 +1058,47 @@ pthread_mutex_unlock
 0x14088 6 5 [abi:
 0x14094 14 13 {default arg#
 0x140ac 7 6 JArray
-0x140b8 12 11 vtable for
-0x140c4 9 8 VTT for
-0x140d0 25 24 construction vtable for
+0x140b8 12 10 vtable for
+0x140c4 9 7 VTT for
+0x140d0 25 23 construction vtable for
 0x140ec 5 4 -in-
-0x140f4 14 13 typeinfo for
-0x14104 19 18 typeinfo name for
-0x14118 17 16 typeinfo fn for
-0x1412c 22 21 non-virtual thunk to
-0x14144 18 17 virtual thunk to
-0x14158 27 26 covariant return thunk to
-0x14174 16 15 java Class for
-0x14184 20 19 guard variable for
-0x14198 23 22 TLS init function for
-0x141b0 26 25 TLS wrapper function for
+0x140f4 14 12 typeinfo for
+0x14104 19 17 typeinfo name for
+0x14118 17 15 typeinfo fn for
+0x1412c 22 20 non-virtual thunk to
+0x14144 18 16 virtual thunk to
+0x14158 27 25 covariant return thunk to
+0x14174 16 14 java Class for
+0x14184 20 18 guard variable for
+0x14198 23 21 TLS init function for
+0x141b0 26 24 TLS wrapper function for
 0x141cc 22 21 reference temporary #
-0x141e4 6 5  for
-0x141ec 18 17 hidden alias for
-0x14200 23 22 transaction clone for
-0x14218 27 26 non-transaction clone for
-0x14234 6 5 _Sat
+0x141e4 6 4  for
+0x141ec 18 16 hidden alias for
+0x14200 23 21 transaction clone for
+0x14218 27 25 non-transaction clone for
+0x14234 6 4 _Sat
 0x1423c 7 6 _Accum
 0x14244 7 6 _Fract
 0x14250 9 8 operator
-0x1425c 10 9 operator
-0x14278 5 4 new
+0x1425c 10 8 operator
+0x14278 5 3 new
 0x1428c 6 5 false
 0x14294 5 4 true
-0x1429c 15 14 java resource
+0x1429c 15 13 java resource
 0x142ac 11 10 decltype (
 0x142bc 5 4 this
 0x142c4 7 6 {parm#
-0x142cc 30 29 global constructors keyed to
-0x142ec 29 28 global destructors keyed to
+0x142cc 30 28 global constructors keyed to
+0x142ec 29 27 global destructors keyed to
 0x1430c 9 8 {lambda(
 0x1431c 15 14 {unnamed type#
-0x1432c 9 8  [clone
+0x1432c 9 7  [clone
 0x1433c 10 9  restrict
 0x14348 10 9  volatile
 0x14354 7 6  const
-0x14360 9 8 complex
-0x1436c 11 10 imaginary
+0x14360 9 7 complex
+0x1436c 11 9 imaginary
 0x1437c 11 10  __vector(
 0x1438c 15 14 std::allocator
 0x1439c 10 9 allocator
@@ -1118,18 +1115,18 @@ pthread_mutex_unlock
 0x144c8 14 13 std::iostream
 0x144d8 51 50 std::basic_iostream<char, std::char_traits<char> >
 0x1450c 15 14 basic_iostream
-0x1453c 9 8 alignof
+0x1453c 9 7 alignof
 0x14550 11 10 const_cast
-0x1457c 10 9 delete[]
+0x1457c 10 8 delete[]
 0x1458c 13 12 dynamic_cast
-0x145a8 8 7 delete
-0x145fc 12 11 operator""
+0x145a8 8 6 delete
+0x145fc 12 10 operator""
 0x14640 6 5 new[]
 0x146bc 17 16 reinterpret_cast
 0x146e4 12 11 static_cast
-0x146f0 8 7 sizeof
+0x146f0 8 6 sizeof
 0x14700 6 5 throw
-0x1470c 7 6 throw
+0x1470c 7 5 throw
 0x14714 12 11 signed char
 0x14720 5 4 bool
 0x14728 8 7 boolean
@@ -2604,6 +2601,18 @@ EXPECT=<<EOF
 EOF
 RUN
 
+NAME=iR aliases ir relocations
+FILE=bins/elf/analysis/x86-helloworld-gcc
+CMDS=<<EOF
+ir~?
+iR~?
+EOF
+EXPECT=<<EOF
+6
+6
+EOF
+RUN
+
 NAME=is (file x86)
 FILE=bins/elf/analysis/x86-helloworld-gcc
 CMDS=is
@@ -3654,9 +3663,93 @@ imp.exit
 EOF
 RUN
 
-NAME=iR*
+NAME=iu help
+FILE=-
+CMDS=<<EOF
+iu?~iux
+iu?~overwritten
+EOF
+EXPECT=<<EOF
+| iux [directory]   extract all resources (default: <file>.resources; alias for ixu)
+|                   output names are sanitized and existing files are never overwritten
+EOF
+RUN
+
+NAME=iu subcommand help
+FILE=-
+CMDS=<<EOF
+iu,?
+iu*?
+iuj?
+iuq?
+iuqq?
+iux?
+EOF
+EXPECT=<<EOF
+| iu,[table-query]  list resources in table using given expression
+| iu*  emit resource flags as radare commands
+| iuj  list resources in JSON
+| iuq  list resource address, size, type and name
+| iuqq  list resource names only
+| iux [directory]  extract all resources (default: <file>.resources; alias for ixu)
+EOF
+RUN
+
+NAME=iu invalid subcommand
+FILE=-
+CMDS=iuy
+EXPECT_ERR=<<EOF
+ERROR: Invalid `y` subcommand, try `iu?`
+EOF
+RUN
+
+NAME=ix help
+FILE=-
+CMDS=<<EOF
+ix?~extract all
+iS?~extract all
+EOF
+EXPECT=<<EOF
+| ixu [directory]   extract all resources (alias for iux)
+| ixS [directory]   extract all sections (alias for iSx)
+| ixSS [directory]  extract all segments (alias for iSSx)
+| iSx [directory]       extract all sections (default: <file>.sections; alias for ixS)
+| iSSx [directory]      extract all segments (default: <file>.segments; alias for ixSS)
+EOF
+RUN
+
+NAME=ix section and segment aliases
+FILE=bins/elf/analysis/hello-linux-x86_64
+ARGS=-e log.level=0
+CMDS=<<EOF
+rmrf .tmp/ix-sections-a
+rmrf .tmp/ix-sections-b
+rmrf .tmp/ix-segments-a
+rmrf .tmp/ix-segments-b
+iSx .tmp/ix-sections-a
+ixS .tmp/ix-sections-b
+iSSx .tmp/ix-segments-a
+ixSS .tmp/ix-segments-b
+!!rahash2 -qq -a sha256 .tmp/ix-sections-a/section_.text_13.bin
+!!rahash2 -qq -a sha256 .tmp/ix-sections-b/section_.text_13.bin
+!!rahash2 -qq -a sha256 .tmp/ix-segments-a/segment_LOAD0_2.bin
+!!rahash2 -qq -a sha256 .tmp/ix-segments-b/segment_LOAD0_2.bin
+rmrf .tmp/ix-sections-a
+rmrf .tmp/ix-sections-b
+rmrf .tmp/ix-segments-a
+rmrf .tmp/ix-segments-b
+EOF
+EXPECT=<<EOF
+dcb90dd685b3db105be06c136ec2d1d5416e00906e28cc71eebb131cd7b6c206
+dcb90dd685b3db105be06c136ec2d1d5416e00906e28cc71eebb131cd7b6c206
+fb026f99dd41eb994947dc2314fb40e7c016ebbdb7533a2efd51629f3bf234db
+fb026f99dd41eb994947dc2314fb40e7c016ebbdb7533a2efd51629f3bf234db
+EOF
+RUN
+
+NAME=iu*
 FILE=bins/pe/standard.exe
-CMDS=iR*
+CMDS=iu*
 EXPECT=<<EOF
 fs resources
 f resource.0 5672 0x00401180
@@ -3668,9 +3761,23 @@ fs *
 EOF
 RUN
 
-NAME=iRj
+NAME=iu table query
 FILE=bins/pe/standard.exe
-CMDS=iRj~{}
+CMDS=iu,size/sort,type/cols/name
+EXPECT=<<EOF
+type       name
+---------------
+GROUP_ICON 788
+MANIFEST   1
+STRING     10
+VERSION    1
+ICON       1576
+EOF
+RUN
+
+NAME=iuj
+FILE=bins/pe/standard.exe
+CMDS=iuj~{}
 EXPECT=<<EOF
 [
   {
@@ -3678,8 +3785,14 @@ EXPECT=<<EOF
     "index": 0,
     "type": "ICON",
     "vaddr": 4198784,
+    "paddr": 896,
     "size": 5672,
+    "id": 1576,
+    "type_id": 3,
     "lang": "LANG_NEUTRAL",
+    "language_id": 0,
+    "codepage": 0,
+    "named": false,
     "timestamp": "Thu Jan  1 00:00:00 1970"
   },
   {
@@ -3687,8 +3800,14 @@ EXPECT=<<EOF
     "index": 1,
     "type": "STRING",
     "vaddr": 4205072,
+    "paddr": 7184,
     "size": 76,
+    "id": 10,
+    "type_id": 6,
     "lang": "LANG_NEUTRAL",
+    "language_id": 0,
+    "codepage": 0,
+    "named": false,
     "timestamp": "Thu Jan  1 00:00:00 1970"
   },
   {
@@ -3696,8 +3815,14 @@ EXPECT=<<EOF
     "index": 2,
     "type": "GROUP_ICON",
     "vaddr": 4204464,
+    "paddr": 6576,
     "size": 20,
+    "id": 788,
+    "type_id": 14,
     "lang": "LANG_NEUTRAL",
+    "language_id": 0,
+    "codepage": 0,
+    "named": false,
     "timestamp": "Thu Jan  1 00:00:00 1970"
   },
   {
@@ -3705,8 +3830,14 @@ EXPECT=<<EOF
     "index": 3,
     "type": "VERSION",
     "vaddr": 4204496,
+    "paddr": 6608,
     "size": 452,
+    "id": 1,
+    "type_id": 16,
     "lang": "LANG_NEUTRAL",
+    "language_id": 0,
+    "codepage": 0,
+    "named": false,
     "timestamp": "Thu Jan  1 00:00:00 1970"
   },
   {
@@ -3714,11 +3845,44 @@ EXPECT=<<EOF
     "index": 4,
     "type": "MANIFEST",
     "vaddr": 4204960,
+    "paddr": 7072,
     "size": 74,
+    "id": 1,
+    "type_id": 24,
     "lang": "LANG_NEUTRAL",
+    "language_id": 0,
+    "codepage": 0,
+    "named": false,
     "timestamp": "Thu Jan  1 00:00:00 1970"
   }
 ]
+EOF
+RUN
+
+NAME=iu quiet and physical modes
+FILE=bins/pe/standard.exe
+CMDS=<<EOF
+iuq
+iuqq
+e io.va=false
+iuq
+EOF
+EXPECT=<<EOF
+0x00401180 5672 ICON 1576
+0x00402a10 76 STRING 10
+0x004027b0 20 GROUP_ICON 788
+0x004027d0 452 VERSION 1
+0x004029a0 74 MANIFEST 1
+1576
+10
+788
+1
+1
+0x00000380 5672 ICON 1576
+0x00001c10 76 STRING 10
+0x000019b0 20 GROUP_ICON 788
+0x000019d0 452 VERSION 1
+0x00001ba0 74 MANIFEST 1
 EOF
 RUN
 
@@ -3763,12 +3927,12 @@ WARN: Relocs has not been applied. Please use `-e bin.relocs.apply=true` or `-e 
 INFO: File has been modified
 EOF
 EXPECT=<<EOF
-* 3 fd: 3 +0x00001000 0x100000000 - 0x100000fff r-x fmap.__TEXT
-- 2 fd: 3 +0x00002000 0x100001000 - 0x100001fff r-- fmap.__DATA
-- 1 fd: 3 +0x00003000 0x100002000 - 0x100003fff r-- fmap.__LINKEDIT
-* 3 fd: 3 +0x00001000 0x100000000 - 0x100000fff rwx fmap.__TEXT
-- 2 fd: 3 +0x00002000 0x100001000 - 0x100001fff rwx fmap.__DATA
-- 1 fd: 3 +0x00003000 0x100002000 - 0x100003fff rwx fmap.__LINKEDIT
+* 3 fd: 3 +0x00001000 0x100000000 - 0x100000fff r-- r-x fmap.__TEXT
+- 2 fd: 3 +0x00002000 0x100001000 - 0x100001fff r-- rw- fmap.__DATA
+- 1 fd: 3 +0x00003000 0x100002000 - 0x100003fff r-- r-- fmap.__LINKEDIT
+* 3 fd: 3 +0x00001000 0x100000000 - 0x100000fff rwx rwx fmap.__TEXT
+- 2 fd: 3 +0x00002000 0x100001000 - 0x100001fff rwx rwx fmap.__DATA
+- 1 fd: 3 +0x00003000 0x100002000 - 0x100003fff rwx rwx fmap.__LINKEDIT
 md5 84144530144b53a704c84d9c65ab5f92
 sha1 9016e215a321184c42c28ab03847554851932713
 sha256 95debaecaaaf89c7f5151218def15ef18c8be375aeccf0564a3b16416c361012
@@ -3989,11 +4153,15 @@ ie
 iS
 EOF
 EXPECT=<<EOF
-nth paddr      vaddr      bind   type   size lib name                      demangled
-------------------------------------------------------------------------------------
+nth paddr      vaddr      bind   type   size lib name                                     demangled
+---------------------------------------------------------------------------------------------------
 0   0x00000168 0x00000168 NONE   STATIC 0        LHello.sfield_localVar2:I
 1   0x00000160 0x00000160 NONE   FIELD  0        LHello.ifield_localVar:I
 2   0x00000238 0x00000238 GLOBAL FUNC   20       LHello.method.<init>()V
+3   0x0000025c 0x0000025c GLOBAL FUNC   34       LHello.method.main([Ljava/lang/String;)V
+4   0x00000290 0x00000290 GLOBAL FUNC   84       LHello.method.foo(I)V
+7   0x000002f4 0x000002f4 GLOBAL FUNC   20       LWorld.method.<init>()V
+8   0x00000318 0x00000318 GLOBAL FUNC   68       LWorld.method.foo(I)V
 nth vaddr      bind type lib name
 ---------------------------------
 0   ---------- NONE FUNC     Ljava/io/PrintStream.method.println(Ljava/lang/String;)V
